@@ -50,6 +50,8 @@ lock = threading.Lock()
 _WORKSPACE_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 _WORKSPACE_LOCKS: Dict[Tuple[str, Optional[int]], threading.Lock] = {}
 _BF16_SUPPORT_CACHE: Dict[Tuple[str, Optional[int]], bool] = {}
+AUTO_SMOOTH_FALLBACK_STEPS = 32
+AUTO_SMOOTH_FALLBACK_MAXSHRINK = 0.8
 
 
 def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
@@ -59,6 +61,10 @@ def _device_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
 
 def _workspace_cache_key(device: torch.device) -> Tuple[str, Optional[int]]:
     return _device_cache_key(device)
+
+
+def _row_replace_mask(mask: torch.Tensor, tensor: torch.Tensor) -> torch.Tensor:
+    return mask if tensor.dim() > 1 else mask.squeeze(1)
 
 
 def _needs_workspace_resize(
@@ -836,8 +842,10 @@ class GPTQ:
         block_ref = block.float()
 
         for candidate in candidates:
-            candidate_steps = smooth_method.mse_steps if isinstance(candidate, SmoothMSE) else 32
-            candidate_shrink = smooth_method.mse_maxshrink if isinstance(candidate, SmoothMSE) else 0.8
+            candidate_steps = smooth_method.mse_steps if isinstance(candidate, SmoothMSE) else AUTO_SMOOTH_FALLBACK_STEPS
+            candidate_shrink = (
+                smooth_method.mse_maxshrink if isinstance(candidate, SmoothMSE) else AUTO_SMOOTH_FALLBACK_MAXSHRINK
+            )
             dequant, scale, zero = self._failsafe_quantize_block(
                 block,
                 strategy=strategy,
@@ -860,8 +868,10 @@ class GPTQ:
             best_err = torch.where(replace, err, best_err)
             best_dequant = torch.where(replace, dequant, best_dequant)
 
-            scale_replace = replace if scale.dim() > 1 else replace.squeeze(1)
-            zero_replace = replace if zero.dim() > 1 else replace.squeeze(1)
+            # Some strategies keep scale/zero as [rows, 1] while others can
+            # collapse to [rows]; align the row-wise replacement mask first.
+            scale_replace = _row_replace_mask(replace, scale)
+            zero_replace = _row_replace_mask(replace, zero)
             best_scale = torch.where(scale_replace, scale, best_scale)
             best_zero = torch.where(zero_replace, zero, best_zero)
 

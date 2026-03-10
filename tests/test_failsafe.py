@@ -29,6 +29,9 @@ from gptqmodel.utils.failsafe import should_use_failsafe
 from gptqmodel.utils.pause_resume import PauseResumeController
 
 
+AUTO_SMOOTHER_TEST_TOLERANCE = 1e-7
+
+
 def test_smooth_mad_uses_sigma_normalized_window():
     torch.manual_seed(0)
 
@@ -82,11 +85,14 @@ def test_auto_smoother_matches_or_beats_single_smoothers():
     asym_err = (weights - asym).pow(2).mean(dim=1)
     shrink_err = (weights - shrink).pow(2).mean(dim=1)
 
-    assert torch.all(auto_err <= base_err + 1e-7)
-    assert torch.all(auto_err <= mse_err + 1e-7)
-    assert torch.all(auto_err <= mad_err + 1e-7)
-    assert torch.all(auto_err <= asym_err + 1e-7)
-    assert torch.all(auto_err <= shrink_err + 1e-7)
+    for label, candidate_err in (
+        ("base", base_err),
+        ("mse", mse_err),
+        ("mad", mad_err),
+        ("asym", asym_err),
+        ("percentile", shrink_err),
+    ):
+        assert torch.all(auto_err <= candidate_err + AUTO_SMOOTHER_TEST_TOLERANCE), label
 
 
 class TestGPTQHessianSimilarity(unittest.TestCase):
