@@ -22,18 +22,18 @@ def test_gptq_pro_enables_activation_weighted_mse():
 
 
 def test_activation_weighted_mse_prioritizes_salient_columns():
-    weights = torch.tensor([[0.1, 0.2, 0.3, 1.2]], dtype=torch.float32)
+    weights = torch.tensor([[0.1, 0.45, 0.8, 1.2]], dtype=torch.float32)
     importance = torch.tensor([1.0, 1.0, 8.0, 8.0], dtype=torch.float32)
 
     baseline = Quantizer(
-        QuantizeConfig(bits=2, sym=False, mse=2.0, act_group_aware=False, desc_act=False),
+        QuantizeConfig(bits=4, sym=False, mse=2.0, act_group_aware=False, desc_act=False),
     )
     baseline.configure(perchannel=True)
     baseline.find_params(weights, weight=True)
 
     weighted = Quantizer(
         QuantizeConfig(
-            bits=2,
+            bits=4,
             sym=False,
             mse=2.0,
             activation_weighted_mse=True,

@@ -139,7 +139,7 @@ class Quantizer(nn.Module):
                 importance_mean = importance_weights.mean(dim=1, keepdim=True)
                 valid = torch.isfinite(importance_mean) & (importance_mean > 0)
                 if torch.any(valid):
-                    normalized_weights = importance_weights / importance_mean.clamp_min(torch.finfo(x.dtype).eps)
+                    normalized_weights = importance_weights / importance_mean.clamp_min(1e-8)
                     importance_weights = torch.where(valid, normalized_weights, torch.ones_like(importance_weights))
                 else:
                     importance_weights = None
