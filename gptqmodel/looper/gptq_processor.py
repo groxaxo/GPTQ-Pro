@@ -75,6 +75,11 @@ class GPTQProcessor(LoopProcessor):
             qcfg_clone.bits = self.qcfg.dynamic_get(module.full_name, "bits", qcfg_clone.bits)
             qcfg_clone.sym = self.qcfg.dynamic_get(module.full_name, "sym", qcfg_clone.sym)
             qcfg_clone.mse = self.qcfg.dynamic_get(module.full_name, "mse", qcfg_clone.mse)
+            qcfg_clone.activation_weighted_mse = self.qcfg.dynamic_get(
+                module.full_name,
+                "activation_weighted_mse",
+                qcfg_clone.activation_weighted_mse,
+            )
 
             qcfg_clone.group_size = self.qcfg.dynamic_get(module.full_name, "group_size", qcfg_clone.group_size)
             desc_act_override = self.qcfg.dynamic_get(module.full_name, "desc_act", None)

@@ -678,6 +678,10 @@ class QuantizeConfig:
     # mean square error calculation: may reduce error loss for some models
     mse: float = field(default=0.0)
 
+    # GPTQ only
+    # use Hessian-diagonal activation importance to weight MSE grid search offline
+    activation_weighted_mse: bool = field(default=False)
+
     # properties that do not directly contributes to quantization or quant inference should be placed in meta
     # i.e. quantizer tool (producer) + version, timestamp, entity who made the quant, etc
     meta: Optional[Dict] = field(default=None)
@@ -1147,6 +1151,7 @@ class QuantizeConfig:
             "desc_act": False,
             "act_group_aware": True,
             "mse": mse,
+            "activation_weighted_mse": True,
             "damp_percent": damp_percent,
             "damp_auto_increment": damp_auto_increment,
             "failsafe": failsafe,
@@ -1270,6 +1275,12 @@ class QuantizeConfig:
             normalized["gptaq"] = meta_payload.get("gptaq")
         if "mse" not in normalized and isinstance(meta_payload, dict) and "mse" in meta_payload:
             normalized["mse"] = meta_payload.get("mse")
+        if (
+            "activation_weighted_mse" not in normalized
+            and isinstance(meta_payload, dict)
+            and "activation_weighted_mse" in meta_payload
+        ):
+            normalized["activation_weighted_mse"] = meta_payload.get("activation_weighted_mse")
         if "act_group_aware" not in normalized and isinstance(meta_payload, dict) and "act_group_aware" in meta_payload:
             normalized["act_group_aware"] = meta_payload.get("act_group_aware")
         if (
@@ -1385,6 +1396,7 @@ class QuantizeConfig:
         meta_payload["offload_to_disk_path"] = self.offload_to_disk_path
         meta_payload["pack_impl"] = self.pack_impl
         meta_payload["mse"] = self.mse
+        meta_payload["activation_weighted_mse"] = self.activation_weighted_mse
         meta_payload["mock_quantization"] = self.mock_quantization
         meta_payload["act_group_aware"] = self.act_group_aware
         meta_payload["gc_mode"] = self.gc_mode

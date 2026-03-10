@@ -58,6 +58,7 @@ class TestSerialization(unittest.TestCase):
             offload_to_disk_path="./offload-test",
             pack_impl="gpu",
             mse=0.125,
+            activation_weighted_mse=True,
             mock_quantization=True,
             hessian=HessianConfig(
                 chunk_size=256,
@@ -78,6 +79,7 @@ class TestSerialization(unittest.TestCase):
             "offload_to_disk_path",
             "pack_impl",
             "mse",
+            "activation_weighted_mse",
             "mock_quantization",
             "act_group_aware",
             "hessian",
@@ -93,6 +95,7 @@ class TestSerialization(unittest.TestCase):
         self.assertEqual(meta["offload_to_disk_path"], cfg.offload_to_disk_path)
         self.assertEqual(meta["pack_impl"], cfg.pack_impl)
         self.assertEqual(meta["mse"], cfg.mse)
+        self.assertEqual(meta["activation_weighted_mse"], cfg.activation_weighted_mse)
         self.assertEqual(meta["mock_quantization"], cfg.mock_quantization)
         self.assertEqual(meta["act_group_aware"], cfg.act_group_aware)
         self.assertEqual(meta["hessian"]["chunk_size"], cfg.hessian.chunk_size)

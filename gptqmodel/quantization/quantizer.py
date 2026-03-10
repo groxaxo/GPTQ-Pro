@@ -66,7 +66,7 @@ class Quantizer(nn.Module):
         if trits:
             self.maxq = torch.tensor(-1)
 
-    def find_params(self, x, weight=False):
+    def find_params(self, x, weight=False, importance: torch.Tensor = None):
         dev = x.device
         self.maxq = self.maxq.to(dev)
 
@@ -113,6 +113,37 @@ class Quantizer(nn.Module):
                     self.zero = torch.round(-xmin / self.scale)
 
         if self.qcfg.mse > 0.0:
+            importance_weights = None
+            if self.qcfg.activation_weighted_mse and importance is not None:
+                importance_weights = torch.nan_to_num(
+                    importance.to(device=dev, dtype=x.dtype),
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                ).clamp_min_(0)
+                if importance_weights.ndim == 1:
+                    importance_weights = importance_weights.unsqueeze(0)
+                if importance_weights.shape[-1] != x.shape[1]:
+                    raise ValueError(
+                        "Quantizer.find_params(): importance parameter shape mismatch. "
+                        f"Expected columns: {x.shape[1]}, got: {importance_weights.shape[-1]}."
+                    )
+                if importance_weights.shape[0] == 1 and x.shape[0] != 1:
+                    importance_weights = importance_weights.expand(x.shape[0], -1)
+                elif importance_weights.shape[0] != x.shape[0]:
+                    raise ValueError(
+                        "Quantizer.find_params(): importance parameter row count mismatch. "
+                        f"Expected 1 or {x.shape[0]} rows, got: {importance_weights.shape[0]}."
+                    )
+
+                importance_mean = importance_weights.mean(dim=1, keepdim=True)
+                valid = torch.isfinite(importance_mean) & (importance_mean > 0)
+                if torch.any(valid):
+                    normalized_weights = importance_weights / importance_mean.clamp_min(1e-8)
+                    importance_weights = torch.where(valid, normalized_weights, torch.ones_like(importance_weights))
+                else:
+                    importance_weights = None
+
             best = torch.full([x.shape[0]], float("inf"), device=dev)
             for i in range(int(self.maxshrink * self.grid)):
                 p = 1 - i / self.grid
@@ -128,6 +159,8 @@ class Quantizer(nn.Module):
                 q -= x
                 q.abs_()
                 q.pow_(self.qcfg.mse)
+                if importance_weights is not None:
+                    q.mul_(importance_weights)
                 err = torch.sum(q, 1)
                 tmp = err < best
                 if torch.any(tmp):

@@ -433,6 +433,7 @@ If your goal is "better GPTQ quality without touching the inference kernels", th
 
 * GAR / `act_group_aware=True` to improve activation ordering without inference-time penalties.
 * MSE-based scale search (`mse > 0`) to reduce outlier-driven grid distortion.
+* Activation-weighted MSE search (`activation_weighted_mse=True`) to bias scale selection toward Hessian-salient channels using an offline-only importance signal.
 * Adaptive damping for badly conditioned Hessian blocks.
 * Optional GPTAQ experimentation, with the same GPTQ export format, when you want to test more aggressive offline correction.
 
@@ -444,7 +445,7 @@ from gptqmodel.quantization import QuantizeConfig
 quant_config = QuantizeConfig.gptq_pro()
 ```
 
-`QuantizeConfig.gptq_pro()` is intentionally conservative: it keeps `quant_method=METHOD.GPTQ` and `format=FORMAT.GPTQ`, so inference speed comes from the same kernels as regular GPTQ. It does **not** claim that GPTQModel currently implements AWQ-style layer fusion or AutoRound-style learned rounding inside the GPTQ inner loop; those are separate algorithms and should be treated as separate offline quantizers.
+`QuantizeConfig.gptq_pro()` is intentionally conservative: it keeps `quant_method=METHOD.GPTQ` and `format=FORMAT.GPTQ`, so inference speed comes from the same kernels as regular GPTQ. Today that preset combines existing GPTQModel features with an AutoRound-inspired offline importance weighting pass during MSE scale search, but it does **not** claim that GPTQModel currently implements AWQ-style layer fusion or AutoRound-style learned rounding inside the GPTQ inner loop; those are separate algorithms and should be treated as separate offline quantizers.
 
 
 ### Experimental Features
