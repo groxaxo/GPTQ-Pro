@@ -34,6 +34,9 @@ log = setup_logger()
 
 lock = threading.Lock()
 
+_ADAPTIVE_DAMP_DIAG_RATIO_THRESHOLD = 32.0
+_ADAPTIVE_DAMP_MAX = 0.25
+
 # Shared workspaces are cached globally per device so that concurrent GPTQ
 # instances reuse temporary buffers instead of repeatedly allocating large
 # tensors during Hessian accumulation. Each device retains at most a single
@@ -253,6 +256,32 @@ class GPTQ:
         # Return identity matrix instead of complex inversion
         identity = torch.eye(H.shape[0], dtype=torch.float32, device=H.device)
         return identity, damp
+
+    def _resolve_initial_damp(self, current_diag: torch.Tensor) -> float:
+        damp = float(self.qcfg.damp_percent)
+        if damp <= 0:
+            return damp
+
+        positive = current_diag.abs()
+        positive = positive[positive > 0]
+        if positive.numel() == 0:
+            return damp
+
+        diag_ratio = float((positive.max() / positive.min()).item())
+        if not math.isfinite(diag_ratio) or diag_ratio <= _ADAPTIVE_DAMP_DIAG_RATIO_THRESHOLD:
+            return damp
+
+        adaptive_damp = min(
+            _ADAPTIVE_DAMP_MAX,
+            damp * math.sqrt(diag_ratio / _ADAPTIVE_DAMP_DIAG_RATIO_THRESHOLD),
+        )
+        if adaptive_damp > damp:
+            log.info(
+                f"Quantization: Module `{self.name}` -> Raising initial damp from "
+                f"`{damp:.5f}` to `{adaptive_damp:.5f}` due to Hessian diagonal spread "
+                f"({diag_ratio:.2e})."
+            )
+        return max(damp, adaptive_damp)
 
     def clone_module(self, copy=True, device: torch.device = None):
         if not device:
@@ -824,7 +853,7 @@ class GPTQ:
 
             diag_view.copy_(current_diag)
             mean = torch.mean(current_diag)
-            damp = self.qcfg.damp_percent
+            damp = self._resolve_initial_damp(current_diag)
 
             damp_recovery_started = False
             recovery_initial_damp = None

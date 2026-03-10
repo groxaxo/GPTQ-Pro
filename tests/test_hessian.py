@@ -600,6 +600,27 @@ def test_hessian_inverse_matches_reference_for_positive_definite_matrix():
     assert torch.allclose(reconstructed, expected_inverse, atol=1e-6, rtol=1e-5)
 
 
+def test_hessian_inverse_raises_initial_damp_for_large_diagonal_spread():
+    gptq = _build_gptq(damp_percent=0.01, damp_auto_increment=0.0)
+    device = gptq.module.target_device
+    hessian = torch.tensor(
+        [[1e-5, 0.0], [0.0, 1.0]],
+        dtype=torch.float32,
+        device=device,
+    )
+
+    hessian_inv, used_damp = gptq.hessian_inverse(hessian)
+
+    assert hessian_inv is not None
+    assert used_damp > gptq.qcfg.damp_percent
+    assert used_damp <= 0.25
+
+    damped = _damped_hessian(hessian, used_damp)
+    reconstructed = hessian_inv.transpose(-1, -2) @ hessian_inv
+    expected_inverse = torch.linalg.inv(damped)
+    assert torch.allclose(reconstructed, expected_inverse, atol=1e-6, rtol=1e-5)
+
+
 def test_hessian_inverse_applies_diagonal_floor_for_semi_definite_input():
     gptq = _build_gptq(damp_percent=0.05, damp_auto_increment=0.0)
     device = gptq.module.target_device
@@ -814,4 +835,3 @@ def test_hessian_merge_multi_gpu_with_attention_mask():
 
     assert gptq_multi.nsamples == total_kept_tokens
     torch.testing.assert_close(merged_hessian, serial_hessian, atol=5e-7, rtol=5e-7)
-

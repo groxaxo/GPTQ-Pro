@@ -1056,6 +1056,64 @@ class QuantizeConfig():
             f.write(json_str)
 
     @classmethod
+    def gptq_pro(
+        cls,
+        *,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        mse: float = 2.0,
+        damp_percent: float = 0.05,
+        damp_auto_increment: float = 0.01,
+        gptaq_alpha: Optional[float] = None,
+        gptaq_device: Union[str, torch.device] = "auto",
+        failsafe: Optional[Union[FailSafe, Dict[str, Any], str, int, float]] = None,
+        **kwargs,
+    ) -> "QuantizeConfig":
+        """
+        Build a speed-preserving GPTQ quality profile.
+
+        The returned config keeps the standard GPTQ output format so existing
+        GPTQ/Marlin/ExLlama/VLLM kernels continue to run unchanged, while
+        enabling offline-only quality improvements already implemented in
+        GPTQModel such as GAR (`act_group_aware`), MSE scale search, and damp
+        recovery.
+        """
+        if "quant_method" in kwargs and kwargs["quant_method"] != METHOD.GPTQ:
+            raise ValueError("QuantizeConfig.gptq_pro() only supports `quant_method=METHOD.GPTQ`.")
+
+        if "format" in kwargs and kwargs["format"] not in QUANT_METHOD_FORMAT_MAPPING[METHOD.GPTQ]:
+            raise ValueError("QuantizeConfig.gptq_pro() only supports GPTQ-compatible output formats.")
+
+        if failsafe is None:
+            failsafe = FailSafe(
+                strategy=FailSafeStrategy.RTN,
+                threshold="0.5%",
+                smooth=SmoothMSE(steps=32, maxshrink=0.9),
+            )
+
+        gptaq = kwargs.pop("gptaq", None)
+        if gptaq is None and gptaq_alpha is not None:
+            gptaq = GPTAQConfig(alpha=gptaq_alpha, device=gptaq_device)
+
+        defaults = {
+            "bits": bits,
+            "group_size": group_size,
+            "sym": sym,
+            "quant_method": METHOD.GPTQ,
+            "format": FORMAT.GPTQ,
+            "desc_act": False,
+            "act_group_aware": True,
+            "mse": mse,
+            "damp_percent": damp_percent,
+            "damp_auto_increment": damp_auto_increment,
+            "failsafe": failsafe,
+            "gptaq": gptaq,
+        }
+        defaults.update(kwargs)
+        return cls(**defaults)
+
+    @classmethod
     # normalize quant config for compat and also performs validation
     def from_quant_config(cls, quantize_cfg, format: str = None):
         valid_formats = {FORMAT.GPTQ, FORMAT.GPTQ_V2, FORMAT.MARLIN, FORMAT.BITBLAS}
@@ -1163,6 +1221,26 @@ class QuantizeConfig():
             normalized["hessian"] = meta_payload.get("hessian")
         if "gptaq" not in normalized and isinstance(meta_payload, dict) and "gptaq" in meta_payload:
             normalized["gptaq"] = meta_payload.get("gptaq")
+        if "mse" not in normalized and isinstance(meta_payload, dict) and "mse" in meta_payload:
+            normalized["mse"] = meta_payload.get("mse")
+        if (
+            "act_group_aware" not in normalized
+            and isinstance(meta_payload, dict)
+            and "act_group_aware" in meta_payload
+        ):
+            normalized["act_group_aware"] = meta_payload.get("act_group_aware")
+        if (
+            "mock_quantization" not in normalized
+            and isinstance(meta_payload, dict)
+            and "mock_quantization" in meta_payload
+        ):
+            normalized["mock_quantization"] = meta_payload.get("mock_quantization")
+        if (
+            "vram_strategy" not in normalized
+            and isinstance(meta_payload, dict)
+            and "vram_strategy" in meta_payload
+        ):
+            normalized["vram_strategy"] = meta_payload.get("vram_strategy")
         if "gc_mode" not in normalized and isinstance(meta_payload, dict) and "gc_mode" in meta_payload:
             normalized["gc_mode"] = meta_payload.get("gc_mode")
         if (
