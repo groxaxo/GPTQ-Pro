@@ -433,7 +433,7 @@ If your goal is "better GPTQ quality without touching the inference kernels", th
 
 * GAR / `act_group_aware=True` to improve activation ordering without inference-time penalties.
 * MSE-based scale search (`mse > 0`) to reduce outlier-driven grid distortion.
-* Adaptive damp recovery during Hessian inversion for numerically unstable layers.
+* Adaptive damping for badly conditioned Hessian blocks.
 * Optional GPTAQ experimentation, with the same GPTQ export format, when you want to test more aggressive offline correction.
 
 This is exposed as a convenience preset:

@@ -1076,8 +1076,8 @@ class QuantizeConfig():
         The returned config keeps the standard GPTQ output format so existing
         GPTQ/Marlin/ExLlama/VLLM kernels continue to run unchanged, while
         enabling offline-only quality improvements already implemented in
-        GPTQModel such as GAR (`act_group_aware`), MSE scale search, and damp
-        recovery.
+        GPTQModel such as GAR (`act_group_aware`), MSE scale search, and
+        adaptive damping for badly conditioned Hessian blocks.
         """
         if "quant_method" in kwargs and kwargs["quant_method"] != METHOD.GPTQ:
             raise ValueError("QuantizeConfig.gptq_pro() only supports `quant_method=METHOD.GPTQ`.")
