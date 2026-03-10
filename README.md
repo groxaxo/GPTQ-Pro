@@ -427,6 +427,25 @@ Set the `act_group_aware` parameter to `True` and disable the default activation
 quant_config = QuantizeConfig(bits=4, group_size=128, act_group_aware=True)
 ```
 
+### GPTQ-Pro quality profile (offline-only, speed-preserving)
+
+If your goal is "better GPTQ quality without touching the inference kernels", the factual way to do that in GPT-QModel is to stay inside the standard GPTQ artifact format and spend the extra work entirely during calibration/quantization. That preserves the same packed INT weights, scales, and zero-points expected by the existing Ampere-friendly GPTQ runtimes while enabling higher-quality offline heuristics such as:
+
+* GAR / `act_group_aware=True` to improve activation ordering without inference-time penalties.
+* MSE-based scale search (`mse > 0`) to reduce outlier-driven grid distortion.
+* Adaptive damping for badly conditioned Hessian blocks.
+* Optional GPTAQ experimentation, with the same GPTQ export format, when you want to test more aggressive offline correction.
+
+This is exposed as a convenience preset:
+
+```python
+from gptqmodel.quantization import QuantizeConfig
+
+quant_config = QuantizeConfig.gptq_pro()
+```
+
+`QuantizeConfig.gptq_pro()` is intentionally conservative: it keeps `quant_method=METHOD.GPTQ` and `format=FORMAT.GPTQ`, so inference speed comes from the same kernels as regular GPTQ. It does **not** claim that GPTQModel currently implements AWQ-style layer fusion or AutoRound-style learned rounding inside the GPTQ inner loop; those are separate algorithms and should be treated as separate offline quantizers.
+
 
 ### Experimental Features
 
