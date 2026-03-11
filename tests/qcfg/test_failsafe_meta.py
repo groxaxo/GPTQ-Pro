@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
+import pytest
+
 from gptqmodel.quantization.config import FailSafe, QuantizeConfig, SmoothAuto, SmoothMAD
 
 
@@ -87,3 +89,22 @@ def test_gptq_pro_defaults_to_auto_failsafe_search():
     assert cfg.desc_act is False
     assert cfg.failsafe is not None
     assert isinstance(cfg.failsafe.smooth, SmoothAuto)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"mse_steps": 0}, "mse_steps"),
+        ({"mse_maxshrink": 0.0}, "mse_maxshrink"),
+        ({"mse_maxshrink": 1.1}, "mse_maxshrink"),
+        ({"percentile": 0.0}, "percentile"),
+        ({"percentile": 101.0}, "percentile"),
+        ({"low": 25.0, "high": 25.0}, "low"),
+        ({"low": 80.0, "high": 20.0}, "low"),
+        ({"low": -1.0, "high": 99.0}, "low"),
+        ({"low": 0.0, "high": 101.0}, "low"),
+    ],
+)
+def test_smooth_auto_rejects_invalid_config(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        SmoothAuto(**kwargs)

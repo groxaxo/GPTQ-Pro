@@ -24,7 +24,7 @@ from gptqmodel.quantization.config import (
     SmoothPercentileAsymmetric,
 )
 from gptqmodel.quantization.failsafe_smooth import smooth_block
-from gptqmodel.quantization.gptq import GPTQ
+from gptqmodel.quantization.gptq import GPTQ, _row_replace_mask
 from gptqmodel.utils.failsafe import should_use_failsafe
 from gptqmodel.utils.pause_resume import PauseResumeController
 
@@ -93,6 +93,25 @@ def test_auto_smoother_matches_or_beats_single_smoothers():
         ("percentile", shrink_err),
     ):
         assert torch.all(auto_err <= candidate_err + AUTO_SMOOTHER_TEST_TOLERANCE), label
+
+
+def test_row_replace_mask_handles_vector_and_matrix_targets():
+    replace = torch.tensor([[True], [False], [True]])
+
+    matrix_target = torch.ones((3, 1), dtype=torch.float32)
+    vector_target = torch.ones((3,), dtype=torch.float32)
+
+    matrix_mask = _row_replace_mask(replace, matrix_target)
+    vector_mask = _row_replace_mask(replace, vector_target)
+
+    assert matrix_mask.shape == matrix_target.shape
+    assert vector_mask.shape == vector_target.shape
+
+    matrix_selected = torch.where(matrix_mask, torch.tensor([[1.0], [2.0], [3.0]]), torch.tensor([[9.0], [9.0], [9.0]]))
+    vector_selected = torch.where(vector_mask, torch.tensor([1.0, 2.0, 3.0]), torch.tensor([9.0, 9.0, 9.0]))
+
+    torch.testing.assert_close(matrix_selected, torch.tensor([[1.0], [9.0], [3.0]]))
+    torch.testing.assert_close(vector_selected, torch.tensor([1.0, 9.0, 3.0]))
 
 
 class TestGPTQHessianSimilarity(unittest.TestCase):

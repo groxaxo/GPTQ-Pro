@@ -50,6 +50,9 @@ lock = threading.Lock()
 _WORKSPACE_CACHE: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
 _WORKSPACE_LOCKS: Dict[Tuple[str, Optional[int]], threading.Lock] = {}
 _BF16_SUPPORT_CACHE: Dict[Tuple[str, Optional[int]], bool] = {}
+# Baseline search settings used by plain SmoothMSE failsafe mode. SmoothAuto
+# gives its dedicated MSE candidate a slightly wider search budget via the
+# smoother config itself; non-MSE candidates ignore these values entirely.
 AUTO_SMOOTH_FALLBACK_STEPS = 32
 AUTO_SMOOTH_FALLBACK_MAXSHRINK = 0.8
 
@@ -727,10 +730,14 @@ class GPTQ:
             sigma: float,
             smooth_method,
             group_size: int,
-            mse_steps: int,
-            mse_maxshrink: float,
+            mse_steps: Optional[int] = None,
+            mse_maxshrink: Optional[float] = None,
     ):
         if isinstance(smooth_method, SmoothMSE):
+            if mse_steps is None:
+                mse_steps = AUTO_SMOOTH_FALLBACK_STEPS
+            if mse_maxshrink is None:
+                mse_maxshrink = AUTO_SMOOTH_FALLBACK_MAXSHRINK
             return mse_optimal_quant(
                 block,
                 self.qcfg,
@@ -842,10 +849,6 @@ class GPTQ:
         block_ref = block.float()
 
         for candidate in candidates:
-            candidate_steps = smooth_method.mse_steps if isinstance(candidate, SmoothMSE) else AUTO_SMOOTH_FALLBACK_STEPS
-            candidate_shrink = (
-                smooth_method.mse_maxshrink if isinstance(candidate, SmoothMSE) else AUTO_SMOOTH_FALLBACK_MAXSHRINK
-            )
             dequant, scale, zero = self._failsafe_quantize_block(
                 block,
                 strategy=strategy,
@@ -853,8 +856,8 @@ class GPTQ:
                 sigma=sigma,
                 smooth_method=candidate,
                 group_size=group_size,
-                mse_steps=candidate_steps,
-                mse_maxshrink=candidate_shrink,
+                mse_steps=smooth_method.mse_steps if isinstance(candidate, SmoothMSE) else None,
+                mse_maxshrink=smooth_method.mse_maxshrink if isinstance(candidate, SmoothMSE) else None,
             )
             err = (dequant.float() - block_ref).pow(2).mean(dim=1, keepdim=True)
             if best_err is None:

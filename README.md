@@ -447,6 +447,8 @@ quant_config = QuantizeConfig.gptq_pro()
 
 `QuantizeConfig.gptq_pro()` is intentionally conservative: it keeps `quant_method=METHOD.GPTQ` and `format=FORMAT.GPTQ`, so inference speed comes from the same kernels as regular GPTQ. The new preset also stays offline-only: for low-sample fallback blocks it borrows an AutoRound-like idea by searching a few smoothing candidates and choosing the one with the lowest reconstruction MSE, but it still emits ordinary GPTQ weights/scales/zeros for the same inference kernels. It does **not** claim that GPTQModel currently implements AWQ-style layer fusion or AutoRound-style learned rounding inside the GPTQ inner loop; those are separate algorithms and should be treated as separate offline quantizers.
 
+Migration note: `QuantizeConfig.gptq_pro()` used to default to `FailSafe(..., smooth=SmoothMSE(steps=32, maxshrink=0.9))`. It now defaults to `SmoothAuto()`, so quantized outputs can change slightly across upgrades even though the exported GPTQ format and inference kernels stay the same. If you need the older behavior for reproducibility, pass the previous failsafe config explicitly.
+
 
 ### Experimental Features
 
