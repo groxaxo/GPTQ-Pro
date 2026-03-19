@@ -22,12 +22,19 @@ if __name__ == "__main__":
         --model ModelCloud/Llama-3.2-1B-Instruct-gptqmodel-4bit-vortex-v2.5 \
         --is_quantized
 
+    Use a separate tokenizer path when the quantized checkpoint should reuse the source tokenizer:
+    python examples/benchmark/perplexity.py \
+        --model /path/to/quantized-model \
+        --tokenizer /path/to/source-model \
+        --is_quantized
+
     Change your dataset:
     python examples/benchmark/perplexity.py --dataset_path tiny_shakespeare
 
     """
     parser = argparse.ArgumentParser(description="Calculate Perplexity for a model.")
     parser.add_argument("--model", type=str, default="ModelCloud/Llama-3.2-1B-Instruct-gptqmodel-4bit-vortex-v2.5", help="Model name.")
+    parser.add_argument("--tokenizer", type=str, default=None, help="Optional tokenizer path. Defaults to --model.")
     parser.add_argument("--n_ctx", type=int, default=1024, help="Context size.")
     parser.add_argument("--n_batch", type=int, default=1024, help="Batch size.")
     parser.add_argument("--dataset_path", type=str, default="wikitext", help="Path to the dataset.")
@@ -45,7 +52,12 @@ if __name__ == "__main__":
     parser.add_argument("--backend", choices=['auto', 'marlin', 'exllama_v1', 'exllama_v2', 'triton', 'cuda', 'torch', 'ipex', 'bitblas'], default='auto', help="Whether to use BACKEND format")
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=args.use_fast_tokenizer)
+    tokenizer_path = args.tokenizer or args.model
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path,
+        use_fast=args.use_fast_tokenizer,
+        trust_remote_code=args.trust_remote_code,
+    )
     if not tokenizer.pad_token_id:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 

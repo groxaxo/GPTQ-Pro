@@ -449,6 +449,25 @@ quant_config = QuantizeConfig.gptq_pro()
 
 Migration note: `QuantizeConfig.gptq_pro()` previously used a single fixed `SmoothMSE(...)` failsafe configuration. It now defaults to `SmoothAuto()`, so quantized outputs can change slightly across upgrades even though the exported GPTQ format and inference kernels stay the same. If you need the older GPTQ-Pro behavior for reproducibility, pass the previous failsafe config explicitly.
 
+#### Reference run: `Qwen/Qwen3.5-4B` on one RTX 3060 (12 GB)
+
+As a concrete single-GPU reference point, we quantized `Qwen/Qwen3.5-4B` with `QuantizeConfig.gptq_pro(bits=4, group_size=128, offload_to_disk=True)` on one isolated RTX 3060 (12 GB) and compared the original and quantized checkpoints with `vLLM`.
+
+Quantization used 16 calibration samples and finished in `376.20s`, with an additional `2.54s` to save the checkpoint.
+
+| Variant | Checkpoint size | vLLM load time | Output tok/s | Avg request latency | Wikitext-2 raw PPL* |
+| --- | --- | --- | --- | --- | --- |
+| Original checkpoint | `8.8G` | `24.10s` | `16.19` | `1.98s` | `11.36` |
+| GPTQ-Pro 4-bit checkpoint | `3.0G` | `15.37s` | `52.64` | `0.61s` | `12.33` |
+
+That run delivered a `3.25x` throughput speedup, `69.24%` lower average request latency, and `1.57x` faster model load time, while increasing perplexity by `0.97` absolute (`1.085x` relative) on Wikitext-2 raw.
+
+Operational notes from this setup:
+
+* The source `Qwen/Qwen3.5-4B` checkpoint is multimodal, so on a 12 GB 3060 the baseline `vLLM` comparison needed text-only settings: `language_model_only=True`, `limit_mm_per_prompt={"image": 0, "video": 0}`, `skip_mm_profiling=True`, `enforce_eager=True`, and `max_model_len=256`.
+* For this quantized checkpoint and `vLLM` stack, `gptq_marlin` was the working backend and the original tokenizer path had to be reused when serving the quantized weights.
+* `*` Perplexity is included only as a regression signal here, consistent with the note above; it was measured on `wikitext-2-raw-v1` with `n_ctx=256` and `n_batch=256`.
+
 
 ### Experimental Features
 
