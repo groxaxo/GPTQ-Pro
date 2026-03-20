@@ -4,11 +4,12 @@
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
 import json
-from typing import Any, Optional
+from typing import Any, List, Optional, Union
 
 import torch
 from accelerate import init_empty_weights
-from transformers import GenerationConfig, PreTrainedModel
+from tokenicer import Tokenicer
+from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
 
 
 # Compatibility wrapper for no_init_weights across different transformers versions
@@ -25,6 +26,73 @@ from ..utils.logger import setup_logger
 __all__ = ["no_init_weights"]
 
 log = setup_logger()
+
+
+def _nested_text_config(model_config: Any) -> Optional[Any]:
+    if model_config is None:
+        return None
+
+    get_text_config = getattr(model_config, "get_text_config", None)
+    if callable(get_text_config):
+        try:
+            text_config = get_text_config()
+        except Exception:
+            text_config = None
+        if text_config is not None and text_config is not model_config:
+            return text_config
+
+    text_config = getattr(model_config, "text_config", None)
+    if text_config is not None and text_config is not model_config:
+        return text_config
+
+    thinker_config = getattr(model_config, "thinker_config", None)
+    thinker_text_config = getattr(thinker_config, "text_config", None)
+    if thinker_text_config is not None and thinker_text_config is not model_config:
+        return thinker_text_config
+
+    return None
+
+
+def ensure_hf_model_config_token_ids(model_config: Any, tokenizer: Optional[Any] = None) -> bool:
+    changed = False
+    text_config = _nested_text_config(model_config)
+
+    for field in ("bos_token_id", "eos_token_id", "pad_token_id"):
+        if not hasattr(model_config, field):
+            setattr(model_config, field, None)
+            changed = True
+
+        if getattr(model_config, field, None) is not None:
+            continue
+
+        value = getattr(text_config, field, None) if text_config is not None else None
+        if value is None and tokenizer is not None:
+            value = getattr(tokenizer, field, None)
+
+        if value is not None:
+            setattr(model_config, field, value)
+            changed = True
+
+    return changed
+
+
+def load_tokenizer_with_model_config(
+    tokenizer: PreTrainedTokenizerBase,
+    model_config: Any,
+    *,
+    strict: bool = False,
+    pad_tokens: Optional[List[Union[str, int]]] = None,
+):
+    ensure_hf_model_config_token_ids(model_config, tokenizer=tokenizer)
+
+    tokenizer_cls = type(tokenizer)
+    tokenicer_cls_wrapper = type(f"{tokenizer_cls.__name__}", (Tokenicer, tokenizer_cls), {})
+
+    wrapped = tokenicer_cls_wrapper()
+    wrapped.tokenizer = tokenizer
+    wrapped.model_config = model_config
+    wrapped.auto_fix_pad_token(strict=strict, pad_tokens=pad_tokens)
+    return wrapped
 
 def _sanitize_generation_config(cfg: GenerationConfig, *, drop_sampling_fields: bool = False) -> bool:
     changed = False
@@ -55,6 +123,8 @@ def _load_sanitized_generation_config(path: str) -> Optional[GenerationConfig]:
 
 # TODO FIXME! Pre-quantized use AutoModelForCausalLM.from_pretrained() but post-quantized use AutoModelForCausalLM.from_config()
 def autofix_hf_model_config(model: PreTrainedModel, path: str = None):
+    ensure_hf_model_config_token_ids(getattr(model, "config", None))
+
     if model.can_generate():
         # sync config first
         if path:

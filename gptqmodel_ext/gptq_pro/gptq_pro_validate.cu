@@ -6,8 +6,8 @@
  *  TODO 1 — Validate decode-only against a scalar host/device reference for
  *            one warp fragment.
  *
- *  TODO 2 — Validate one full ks/j MMA step against a reference with FP16
- *            accumulation semantics.
+ *  TODO 2 — Validate one full ks/j MMA step against a reference with FP32
+ *            accumulation semantics and FP16 inputs.
  *
  * Each milestone produces a per-thread pass/fail flag stored in a result
  * buffer that can be inspected from the host.  Both kernels target sm80+.
@@ -52,7 +52,7 @@ inline void scalar_decode_nibble(uint32_t w0, uint32_t w1,
 //   3. Calls decode_bfrag_to_rb() to obtain RB[0], RB[1].
 //   4. Compares against a pre-computed float reference stored in ref_rb0 and
 //      ref_rb1 (one float per lane, computed by scalar_decode_nibble on host).
-//   5. Sets result[lane] = 1 if both values match within FP16 precision.
+//   5. Sets result[lane] = 1 if both half2 lanes match within FP16 precision.
 // ---------------------------------------------------------------------------
 __global__ void validate_decode_kernel(
     const uint32_t* __restrict__ bfrag_smem_src,  // GPTQ_PRO_BFRAG_WORDS_PER_BUF words (global, will be copied to smem)
@@ -88,56 +88,42 @@ __global__ void validate_decode_kernel(
     rb0_r.u32 = RB[0];
     rb1_r.u32 = RB[1];
 
-    float got_rb0 = __half2float(__low2half(rb0_r.h2));
-    float got_rb1 = __half2float(__low2half(rb1_r.h2));
+    float got_rb0_lo = __half2float(__low2half(rb0_r.h2));
+    float got_rb0_hi = __half2float(__high2half(rb0_r.h2));
+    float got_rb1_lo = __half2float(__low2half(rb1_r.h2));
+    float got_rb1_hi = __half2float(__high2half(rb1_r.h2));
 
     // FP16 has ~1e-3 relative error; use 2 ULP tolerance in FP16 space.
     const float tol = 2.0f * __half2float(__float2half(1.0f)) * 1e-3f;
 
-    bool ok = (fabsf(got_rb0 - ref_rb0[lane]) <= tol + 1e-5f) &&
-              (fabsf(got_rb1 - ref_rb1[lane]) <= tol + 1e-5f);
+    bool ok = (fabsf(got_rb0_lo - ref_rb0[lane]) <= tol + 1e-5f) &&
+              (fabsf(got_rb0_hi - ref_rb0[lane]) <= tol + 1e-5f) &&
+              (fabsf(got_rb1_lo - ref_rb1[lane]) <= tol + 1e-5f) &&
+              (fabsf(got_rb1_hi - ref_rb1[lane]) <= tol + 1e-5f);
     result[lane] = ok ? 1 : 0;
 }
 
 // ============================================================
-// TODO 2  — Scalar FP16-accumulating MMA reference
+// TODO 2  — Scalar FP32-accumulating MMA reference
 // ============================================================
 
-/// Scalar reference for mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16.
+/// Scalar reference for mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32.
 ///
-/// Interprets RA/RB/RC as flat arrays of FP16 elements according to the
-/// PTX m16n8k16 register ownership map, performs the outer-product
-/// accumulation in FP32, then rounds back to FP16 — matching the hardware
-/// accumulation semantics.
+/// Interprets A and B as FP16 inputs and accumulates into FP32, matching the
+/// hardware accumulation semantics of the tensor-core instruction.
 ///
 /// Thread p (0..31) owns:
 ///   RA: A[(p>>2) + {0,8}][(p&3)*2 + {0,1}]  → a[0..3] (4 fp16 in 2 u32)
 ///   RB: B[(p>>2)*2 + {0,1}][(p&3)*2 + {0,1}] → b[0..1] (4 fp16 in 2 u32 via
 ///         half2 packing)
-///   RC[j][0..1]: output accumulator fragment (4 fp16 per tile j)
+///   RC[j][0..3]: output accumulator fragment (4 fp32 values per tile j)
 ///
 /// This scalar function operates on the unpacked FP32 equivalents; the caller
 /// is responsible for unpacking and repacking.
-///
-/// C_out = A * B + C_in   (all in FP16, accumulated in FP32 then rounded)
-///
-/// For correctness testing we expose a per-element version:
-///   out = fma_f16(a, b, c)  where inputs and output are FP32 proxy values.
-inline float fma_f16_proxy(float a, float b, float c) {
-    // Simulate FP16 precision: convert inputs to FP16 and back, then
-    // perform arithmetic in double to get the rounded result.
-    auto f16 = [](float v) -> float {
-        // Round to FP16 via bit manipulation (avoids device-only intrinsics).
-        uint16_t bits;
-        // Use __float2half/__half2float which are callable from host in CUDA 11+
-        // when compiled with --expt-relaxed-constexpr or as __host__ __device__.
-        half h;
-        memcpy(&h, &bits, 0);  // suppress unused-variable warning
-        h = __float2half(v);
-        return __half2float(h);
-    };
-    float ha = f16(a), hb = f16(b), hc = f16(c);
-    return f16(f16(ha * hb) + hc);
+inline float fma_f32_from_f16_inputs_proxy(float a, float b, float c) {
+    const half ha = __float2half(a);
+    const half hb = __float2half(b);
+    return c + __half2float(ha) * __half2float(hb);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,51 +132,42 @@ inline float fma_f16_proxy(float a, float b, float c) {
 // One thread block = one warp.  Validates a single (ks=0, j=0) MMA step.
 // Steps:
 //   1. Loads pre-dequantized RA[4] and RB[2] from global memory.
-//   2. Zeroes RC[2].
-//   3. Calls mma_f16_m16n8k16() (the real tensor-core MMA).
-//   4. Computes a scalar reference using fma_f16_proxy().
+//   2. Zeroes RC[4].
+//   3. Calls mma_f32_m16n8k16() (the real tensor-core MMA).
+//   4. Computes a scalar reference using fma_f32_from_f16_inputs_proxy().
 //   5. Compares RC output against reference; writes 1=pass / 0=fail.
 // ---------------------------------------------------------------------------
 __global__ void validate_mma_step_kernel(
     const uint32_t* __restrict__ ra_global,   // [4] per lane
     const uint32_t* __restrict__ rb_global,   // [2] per lane
-    const float*    __restrict__ ref_rc,      // [2*2] per lane (float proxy)
+    const float*    __restrict__ ref_rc,      // [4] per lane (float proxy)
     int*            result)                   // [WARP_SIZE] 1=pass, 0=fail
 {
     const int lane = threadIdx.x & (GPTQ_PRO_WARP_SIZE - 1);
 
     // Load fragment registers for this lane.
-    uint32_t RA[4], RB[2], RC[2];
+    uint32_t RA[4], RB[2];
+    float RC[4];
     RA[0] = ra_global[lane * 4 + 0];
     RA[1] = ra_global[lane * 4 + 1];
     RA[2] = ra_global[lane * 4 + 2];
     RA[3] = ra_global[lane * 4 + 3];
     RB[0] = rb_global[lane * 2 + 0];
     RB[1] = rb_global[lane * 2 + 1];
-    RC[0] = 0u;
-    RC[1] = 0u;
+    RC[0] = 0.0f;
+    RC[1] = 0.0f;
+    RC[2] = 0.0f;
+    RC[3] = 0.0f;
 
     // ---- TODO 2: real tensor-core MMA ----
-    mma_f16_m16n8k16(RA, RB, RC);
+    mma_f32_m16n8k16(RA, RB, RC);
 
-    // ---- Extract result FP16 values ----
-    Half2Reg rc0_r, rc1_r;
-    rc0_r.u32 = RC[0];
-    rc1_r.u32 = RC[1];
-
-    float got[4] = {
-        __half2float(__low2half(rc0_r.h2)),
-        __half2float(__high2half(rc0_r.h2)),
-        __half2float(__low2half(rc1_r.h2)),
-        __half2float(__high2half(rc1_r.h2)),
-    };
-
-    // Tolerance: FP16 accumulation can differ by up to a few ULP from the
-    // scalar FP16 proxy due to reordering; allow 4 ULPs.
-    const float tol = 4.0f * 1e-3f;
+    // FP32 accumulation with exact FP16 inputs should agree closely with the
+    // scalar proxy. Allow a tiny epsilon for instruction-order differences.
+    const float tol = 1e-6f;
     bool ok = true;
     for (int i = 0; i < 4; ++i) {
-        if (fabsf(got[i] - ref_rc[lane * 4 + i]) > tol + 1e-6f) {
+        if (fabsf(RC[i] - ref_rc[lane * 4 + i]) > tol) {
             ok = false;
         }
     }
@@ -302,17 +279,17 @@ int main() {
 
     // Scalar reference: each D[m][n] = sum_{k=0}^{15} A[m][k] * B[k][n].
     // With uniform inputs, D[m][n] = 16 * a_val * b_val for all (m,n).
-    // In FP16 accumulation: simulate the 16-step chain in order (RC starts at 0).
+    // In FP32 accumulation with FP16 inputs: simulate the 16-step chain in order.
     // For m16n8k16, each thread's RA[0..3] contributes 8 A elements and RB[0..1]
     // contributes 4 B elements; across 4 threads per output element, each
     // thread contributes 4 of the 16 K multiplications.
     // With uniform inputs every lane computes the same reference value.
     float h_ref_rc[GPTQ_PRO_WARP_SIZE * 4];
     {
-        // Simulate k=16 FP16-precision accumulations starting from C=0.
+        // Simulate k=16 FP32-precision accumulations with FP16-rounded inputs.
         float acc = 0.0f;
         for (int k = 0; k < 16; ++k) {
-            acc = fma_f16_proxy(a_val, b_val, acc);
+            acc = fma_f32_from_f16_inputs_proxy(a_val, b_val, acc);
         }
         for (int lane = 0; lane < GPTQ_PRO_WARP_SIZE; ++lane) {
             for (int c = 0; c < 4; ++c) {

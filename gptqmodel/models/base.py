@@ -47,7 +47,7 @@ from ..quantization.rotation.rotation import fuse_layer_norms, rotate_model
 from ..utils.backend import BACKEND
 from ..utils.calibration import prepare_calibration_dataset
 from ..utils.device import get_device
-from ..utils.hf import autofix_hf_model_config
+from ..utils.hf import autofix_hf_model_config, ensure_hf_model_config_token_ids, load_tokenizer_with_model_config
 from ..utils.importer import select_quant_linear
 from ..utils.logger import QuantizationRegionTimer, setup_logger
 from ..utils.model import MODALITY, find_modules, get_module_by_name_prefix, move_to
@@ -269,9 +269,12 @@ class BaseQModel(nn.Module):
         self.model = self.after_model_load(model, load_quantized_model=load_quantized_model)
         self.turtle_model = turtle_model
 
+        if isinstance(self.model, PreTrainedModel):
+            ensure_hf_model_config_token_ids(self.model.config, tokenizer=tokenizer)
+
         if tokenizer is not None:
             if isinstance(tokenizer, PreTrainedTokenizerBase):
-                self.tokenizer = Tokenicer.load(tokenizer, trust_remote_code=trust_remote_code)
+                self.tokenizer = load_tokenizer_with_model_config(tokenizer, self.model.config)
             else:
                 raise ValueError(
                     f"Unsupported `tokenizer` type: Expected `PreTrainedTokenizerBase`, actual = `{type(tokenizer)}`.")
@@ -702,8 +705,7 @@ class BaseQModel(nn.Module):
         # Use the provided tokenizer if one is passed to quantize()
         if tokenizer is not None:
             if isinstance(tokenizer, PreTrainedTokenizerBase):
-                # TODO FIX ME...this is a bug
-                self.tokenizer = Tokenicer.load(tokenizer, trust_remote_code=self.trust_remote_code)
+                self.tokenizer = load_tokenizer_with_model_config(tokenizer, self.model.config)
             else:
                 raise ValueError(
                     f"Unsupported `tokenizer` type: Expected `PreTrainedTokenizerBase`, actual = `{type(tokenizer)}`.")
@@ -882,8 +884,7 @@ class BaseQModel(nn.Module):
         # Use the provided tokenizer if one is passed to quantize()
         if tokenizer is not None:
             if isinstance(tokenizer, PreTrainedTokenizerBase):
-                # TODO FIX ME...this is a bug
-                self.tokenizer = Tokenicer.load(tokenizer, trust_remote_code=self.trust_remote_code)
+                self.tokenizer = load_tokenizer_with_model_config(tokenizer, self.model.config)
             else:
                 raise ValueError(
                     f"Unsupported `tokenizer` type: Expected `PreTrainedTokenizerBase`, actual = `{type(tokenizer)}`.")

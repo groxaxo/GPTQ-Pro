@@ -1,10 +1,10 @@
 /*
  * GPTQ-Pro custom INT4 dequantized GEMM kernel
  *
- * Architecture: mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16
+ * Architecture: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
  *   A: FP16 activations  (M×K, row-major)
  *   B: INT4 weights      (K×N, col-major, packed as nibbles)
- *   C: FP16 output       (M×N, row-major, FP16 accumulation)
+ *   C: FP16 output       (M×N, row-major, FP32 accumulation with FP16 store)
  *
  * Key design:
  *   - PIPE=2 double-buffered shared memory with CP_ASYNC
@@ -20,9 +20,9 @@
  *   Within a word:
  *     bits [15:0]  → two INT4 nibbles for even lane (2k):
  *                      bits [3:0]  = w0 nibble  (RB[0], low half)
- *                      bits [7:4]  = w0 exponent filler
+ *                      bits [7:4]  = reserved in the current scaffold
  *                      bits [11:8] = w1 nibble  (RB[1], low half)
- *                      bits [15:12]= w1 exponent filler
+ *                      bits [15:12]= reserved in the current scaffold
  *     bits [31:16] → same pattern for odd lane (2k+1)
  */
 
@@ -120,9 +120,9 @@ void st_shared_u32(uint32_t smem_addr, uint32_t val) {
 /// Fetch the packed 16-bit nibble word for this lane from tile (ks, j).
 /// Returns a uint16_t holding 4 nibbles:
 ///   bits [3:0]   = weight nibble 0  (will become RB[0] low FP16)
-///   bits [7:4]   = exponent filler for FP16 fast-decode trick
+///   bits [7:4]   = reserved in the current scaffold
 ///   bits [11:8]  = weight nibble 1  (will become RB[1] low FP16)
-///   bits [15:12] = exponent filler for FP16 fast-decode trick
+///   bits [15:12] = reserved in the current scaffold
 __device__ __forceinline__
 uint16_t fetch_bfrag_packed16(const uint32_t* __restrict__ smem_bfrag,
                               int buf, int ks, int j, int lane) {
@@ -138,10 +138,11 @@ uint16_t fetch_bfrag_packed16(const uint32_t* __restrict__ smem_bfrag,
 // packed_16 layout (as produced by fetch_bfrag_packed16):
 //   bits [3:0]  → w0: INT4 weight for RB[0] half 0
 //   bits [11:8] → w1: INT4 weight for RB[1] half 0
-// (The high nibble in each byte is used for the FP16 exponent trick.)
+// (The high nibble in each byte is currently unused by the scaffold.)
 //
 // Decode: fp16_w = scale * (nibble - zero_point)
-// Fast path uses the magic exponent trick to avoid int→float conversions.
+// The scaffold uses direct int→half conversion because the focus here is the
+// fragment contract and accumulation semantics, not the final decode fast path.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__
 void decode_bfrag_to_rb(uint16_t packed_16,
@@ -172,19 +173,19 @@ void decode_bfrag_to_rb(uint16_t packed_16,
 }
 
 // ---------------------------------------------------------------------------
-// FP16 accumulating MMA: RC[j] += RA × RB  (m16n8k16.row.col.f16.f16.f16.f16)
+// FP32 accumulating MMA: RC[j] += RA × RB  (m16n8k16.row.col.f32.f16.f16.f32)
 // ---------------------------------------------------------------------------
 __device__ __forceinline__
-void mma_f16_m16n8k16(const uint32_t RA[4],
+void mma_f32_m16n8k16(const uint32_t RA[4],
                       const uint32_t RB[2],
-                      uint32_t       RC[2]) {
+                      float          RC[4]) {
     asm volatile(
-        "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-        "{%0, %1}, "
-        "{%2, %3, %4, %5}, "
-        "{%6, %7}, "
-        "{%0, %1};\n"
-        : "+r"(RC[0]), "+r"(RC[1])
+        "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+        "{%0, %1, %2, %3}, "
+        "{%4, %5, %6, %7}, "
+        "{%8, %9}, "
+        "{%0, %1, %2, %3};\n"
+        : "+f"(RC[0]), "+f"(RC[1]), "+f"(RC[2]), "+f"(RC[3])
         :  "r"(RA[0]),  "r"(RA[1]),  "r"(RA[2]),  "r"(RA[3]),
            "r"(RB[0]),  "r"(RB[1]));
 }

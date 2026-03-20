@@ -1,12 +1,14 @@
 /*
  * GPTQ-Pro INT4 dequantized GEMM kernel
  *
- * Implements the full pipelined kernel discussed in the design review.
+ * Implements the standalone scaffold for the pipelined kernel discussed in the
+ * design review. The shared-memory ring and fragment math are real; the async
+ * global-to-shared staging and Paro metadata path are still placeholders.
  *
  * Tile shape (one warp):  M=16,  N=64 (8 × n8),  K=16 (4 × k4)
  * Shared memory:          PIPE=2 double-buffered stages
  * Pipeline:               CP_ASYNC + cp_async_wait<PIPE-2>
- * Accumulator:            uint32_t RC[J_TILES][2]  (FP16 pairs)
+ * Accumulator:            float RC[J_TILES][4]     (FP32 outputs)
  *
  * Completed TODOs (relative to the research scaffold discussed in review):
  *   [TODO 3] Replaced flat smem access `uint16_t packed_16 = Bfrag[...]`
@@ -64,14 +66,14 @@ void apply_paro_transform(half2& a0, half2& a1,
 //   2. For each j-tile:
 //      a. [TODO 3] Fetch B packed nibbles using ld.shared.u32 path.
 //      b. Decode INT4 → FP16 with scale & zero-point.
-//      c. Execute mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16.
+//      c. Execute mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__
 void do_mma_inner_loop(
     const GptqProSmem* __restrict__ smem,
     int                smem_load_buf,  // which PIPE buffer to read
     int                col_base,       // global N offset for this warp
-    uint32_t           RC[GPTQ_PRO_J_TILES][2])
+    float              RC[GPTQ_PRO_J_TILES][4])
 {
     const int lane = threadIdx.x & (GPTQ_PRO_WARP_SIZE - 1);
 
@@ -115,8 +117,8 @@ void do_mma_inner_loop(
             uint32_t RB[2];
             decode_bfrag_to_rb(packed_16, scale, zp, RB);
 
-            // ---- MMA accumulate (FP16 accumulation) ----
-            mma_f16_m16n8k16(RA, RB, RC[j]);
+            // ---- MMA accumulate (FP32 accumulation) ----
+            mma_f32_m16n8k16(RA, RB, RC[j]);
         }
     }
 }
@@ -155,11 +157,13 @@ __global__ void gptq_pro_gemm_kernel(
     const int num_k_stages = K / GPTQ_PRO_K_PER_WARP;
 
     // ---- Zero accumulators ----
-    uint32_t RC[GPTQ_PRO_J_TILES][2];
+    float RC[GPTQ_PRO_J_TILES][4];
     #pragma unroll
     for (int j = 0; j < GPTQ_PRO_J_TILES; ++j) {
-        RC[j][0] = 0u;
-        RC[j][1] = 0u;
+        RC[j][0] = 0.0f;
+        RC[j][1] = 0.0f;
+        RC[j][2] = 0.0f;
+        RC[j][3] = 0.0f;
     }
 
     int smem_load_idx  = 0;
@@ -217,20 +221,26 @@ __global__ void gptq_pro_gemm_kernel(
     }
 
     // ---- Store FP16 results to C ----
+    //
+    // For m16n8k16.row.col with FP32 accumulators, each lane owns 4 output
+    // elements for a given j tile:
+    //   rows = {2*tid4 + 0, 2*tid4 + 1, 2*tid4 + 8, 2*tid4 + 9}
+    //   col  = groupID
+    const int groupID = lane >> 2;
+    const int tid4    = lane & 3;
     #pragma unroll
     for (int j = 0; j < GPTQ_PRO_J_TILES; ++j) {
-        int n = n_base + j * 8 + (lane & 3) * 2;
-        int m = m_base + (lane >> 2);
-        if (m < M && n < N) {
-            Half2Reg r;
-            r.u32 = RC[j][0];
-            *reinterpret_cast<half2*>(&C[m * N + n]) = r.h2;
-        }
-        int m2 = m_base + (lane >> 2) + 8;
-        if (m2 < M && n < N) {
-            Half2Reg r;
-            r.u32 = RC[j][1];
-            *reinterpret_cast<half2*>(&C[m2 * N + n]) = r.h2;
+        const int n  = n_base + j * 8 + groupID;
+        const int m0 = m_base + 2 * tid4 + 0;
+        const int m1 = m_base + 2 * tid4 + 1;
+        const int m2 = m_base + 2 * tid4 + 8;
+        const int m3 = m_base + 2 * tid4 + 9;
+
+        if (n < N) {
+            if (m0 < M) C[m0 * N + n] = __float2half_rn(RC[j][0]);
+            if (m1 < M) C[m1 * N + n] = __float2half_rn(RC[j][1]);
+            if (m2 < M) C[m2 * N + n] = __float2half_rn(RC[j][2]);
+            if (m3 < M) C[m3 * N + n] = __float2half_rn(RC[j][3]);
         }
     }
 }
