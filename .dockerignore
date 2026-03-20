@@ -1,0 +1,11 @@
+.git
+.copilot
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+GPTQModel.egg-info/
+gptqmodel_offload/
+gptq_log_*.log

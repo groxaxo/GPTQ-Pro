@@ -1,0 +1,11 @@
+name: gptq-pro-vllm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - git
+  - git-lfs
+  - ninja
+  - cmake
+  - libstdcxx-ng

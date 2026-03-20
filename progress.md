@@ -1255,3 +1255,63 @@ Once patched, vLLM selected `gptq_marlin` automatically and reported
 - vLLM also logged an unrelated plugin load error (`ModuleNotFoundError: No module named 'reap'`)
   and FLA shape warnings during warmup/inference. These did not prevent successful runs, but they
   are worth cleaning up before treating this path as production-ready.
+
+### Follow-up: 27B replacement for the GGUF-only HauhauCS request
+
+The requested repository
+`HauhauCS/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive` turned out to be GGUF-only, with the
+model card explicitly saying `GPTQ — coming soon`. Because GPTQModel requires a Transformers /
+Safetensors source checkpoint for GPTQ-Pro quantization, the replacement run used the
+user-approved Transformers checkpoint `huihui-ai/Huihui-Qwen3.5-27B-abliterated`.
+
+#### 27B original vs GPTQ-Pro perplexity
+
+Shared-machine VRAM pressure from another long-lived process on the second RTX 3090 repeatedly
+OOMed the original-model evaluation path, even after reducing context length. The stable fallback
+was a fixed regression slice on one clean RTX 3090 plus CPU offload:
+
+- dataset: WikiText-2 raw test
+- `max_length=256`
+- `stride=256`
+- `max_windows=16`
+- `4096` scored tokens total
+
+| Configuration | Perplexity | Delta vs original |
+|---------------|------------|-------------------|
+| **Original BF16** | **11.6266** | baseline |
+| **GPTQ-Pro 4-bit g32** | **12.0161** | **+0.3895** |
+
+These absolute numbers should not be compared directly against the earlier 4B full-dataset sweep:
+they use much shorter context windows and fewer total tokens because the shared environment could
+not sustain the full-length BF16 evaluation for this larger model.
+
+#### 27B GPTQ-Pro quantization summary
+
+| Metric | Value |
+|--------|-------|
+| Model | `huihui-ai/Huihui-Qwen3.5-27B-abliterated` |
+| Load time | `5.3s` |
+| Quantization time | `2273.6s` |
+| Save time | `21.8s` |
+| Calibration samples | `128` |
+| Output size | ~`18G` |
+| Output shards | `5` safetensors files |
+| Key quality / stability knobs | `group_size=32`, `balanced` VRAM strategy, `gc_mode=on_stage_end`, `auto_forward_data_parallel=false`, `wait_for_submodule_finalizers=true`, `ExpertsRoutingBypass(batch_size=2)`, disk offload |
+
+The offload scratch directory peaked in the mid-teens of gigabytes and showed active per-module
+staging throughout the run, which confirmed that the MoE-aware serial / offload path was doing the
+heavy lifting rather than silently hanging.
+
+#### 27B vLLM smoke result
+
+The installed `vLLM 0.17.0` still does not cleanly deploy this Qwen 3.5 text-family checkpoint in
+the tested environment. A one-shot offline `LLM.generate()` smoke test on the new quantized GPTQ-Pro
+checkpoint did select `gptq_marlin`, but then failed before generation with:
+
+- `TypeError: Invalid type of HuggingFace config`
+- expected `Qwen3_5Config`
+- found `Qwen3_5TextConfig`
+
+For this replacement model, the mismatch surfaced through vLLM's multimodal renderer path rather
+than the earlier text-only load path, but the root integration problem is the same: upstream vLLM
+still does not fully normalize the Hugging Face Qwen 3.5 config family in this environment.

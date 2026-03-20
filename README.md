@@ -241,6 +241,33 @@ apt install python3-dev ninja setuptools -U
 pip install -v . --no-build-isolation
 ```
 
+### Conda + Docker (reproducible GPTQ-Pro / vLLM environment)
+
+This repository now includes a top-level `environment.yml` and `Dockerfile` for a reproducible
+CUDA + conda + editable-install workflow that matches the GPTQ-Pro / vLLM experiments documented
+below.
+
+```bash
+# conda / local
+conda env create -f environment.yml
+conda activate gptq-pro-vllm
+pip install -v --no-build-isolation -e ".[vllm,eval,openai]"
+
+# docker
+docker build -t gptq-pro-vllm .
+docker run --gpus all -it --shm-size=16g \
+  -v "$PWD":/workspace/GPTQ-Pro \
+  gptq-pro-vllm
+```
+
+Notes:
+
+* The Docker image expects the NVIDIA Container Toolkit on the host.
+* The conda env is intentionally named `gptq-pro-vllm` so shell snippets, chat examples, and vLLM
+  commands all use the same environment name.
+* `environment.yml` keeps the base environment lightweight; the editable install with
+  `.[vllm,eval,openai]` layers in the project extras from `pyproject.toml`.
+
 ### Inference
 Three-line API to use `GPT-QModel` for GPTQ model inference:
 
@@ -255,6 +282,27 @@ print(model.tokenizer.decode(result)) # string output
 To use models from [ModelScope](https://www.modelscope.cn/) instead of HuggingFace Hub, set an environment variable:
 ```shell
 export GPTQMODEL_USE_MODELSCOPE=True
+```
+
+### Chat CLI frontend
+
+The lightweight CLI frontend lives under [`chat/`](chat/README.md). It now supports:
+
+* `--tokenizer_path` to reuse a source tokenizer with a quantized checkpoint
+* `--system_prompt` to override or disable the default chat system message
+* `--max_new_tokens` to cap reply length
+* `--trust_remote_code` for newer Hugging Face model families such as Qwen 3.5
+
+Example:
+
+```bash
+cd chat
+./run.sh \
+  --gpu_id 0 \
+  --model_path /models/Qwen3.5-4B-abliterated-GPTQ-Pro-4bit \
+  --tokenizer_path wangzhang/Qwen3.5-4B-abliterated \
+  --max_new_tokens 1024 \
+  --trust_remote_code
 ```
 
 ### OpenAI API compatible endpoint
@@ -468,6 +516,101 @@ Operational notes from this setup:
 * For this quantized checkpoint and `vLLM` stack, `gptq_marlin` was the working backend and the original tokenizer path had to be reused when serving the quantized weights.
 * Native `transformers` Qwen3.5 text quantization currently needs `batch_size=1` in GPTQModel because multi-sample padded calibration batches can fail in the SDPA attention path.
 * `*` Perplexity is included only as a regression signal here, consistent with the note above; it was measured on `wikitext-2-raw-v1` with `n_ctx=256` and `n_batch=256`.
+
+#### Replication assets, CUDA scaffold files, and `wangzhang/Qwen3.5-4B-abliterated` follow-up
+
+If you want to reproduce the low-level GPTQ-Pro CUDA validation work from this repository state,
+the relevant standalone CUDA files are:
+
+* `gptqmodel_ext/gptq_pro/gptq_pro_kernel.cuh`
+* `gptqmodel_ext/gptq_pro/gptq_pro_kernel.cu`
+* `gptqmodel_ext/gptq_pro/gptq_pro_validate.cu`
+
+These are the files used for the standalone scaffold / validator flow. They are useful for
+reproducing the kernel-side work, but they are still separate from the current Python inference
+dispatch path.
+
+For the `wangzhang/Qwen3.5-4B-abliterated` text-only follow-up, the measured results were:
+
+| Variant | Quantization time | WikiText-2 raw PPL | vLLM status / speed |
+| --- | --- | --- | --- |
+| Original BF16 | n/a | `8.3116` | vanilla `vLLM 0.17.0` blocked by Qwen3.5 text config mismatch |
+| Plain GPTQ 4-bit g128 | `181.4s` | `8.6759` | vanilla `vLLM 0.17.0` blocked by the same config mismatch |
+| GPTQ-Pro 4-bit g128 | `324.9s` | `8.6314` | patched `vLLM` + `gptq_marlin`: `175.21-178.14 tok/s` on `1x 3090`, `194.20-206.53 tok/s` on `2x 3090` |
+
+Vanilla `vLLM 0.17.0` failed on the original, plain GPTQ, and GPTQ-Pro checkpoints before first
+token with the same `Qwen3_5TextConfig` vs `Qwen3_5Config` type mismatch. The detailed comparison
+is documented in [`docs/qwen35_vllm_comparison.md`](docs/qwen35_vllm_comparison.md).
+
+#### Important limitation: GGUF-only Qwen 3.5 35B-A3B repositories
+
+The repository `HauhauCS/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive` currently publishes
+**GGUF files only** and its model card explicitly says `GPTQ — coming soon`.
+
+That matters because GPTQModel and the current vLLM workflow in this repository expect a
+Transformers / Safetensors checkpoint for GPTQ-Pro quantization. A GGUF-only repo is therefore not
+directly quantizable by GPTQModel, even if the underlying base architecture is supported.
+
+If you want to reproduce the same architecture with GPTQ-Pro today, start from the upstream
+Transformers checkpoint `Qwen/Qwen3.5-35B-A3B`, then re-run the same quantization and evaluation
+workflow once a non-GGUF release of the HauhauCS fine-tune becomes available.
+
+#### Replacement run: `huihui-ai/Huihui-Qwen3.5-27B-abliterated`
+
+Because the exact HauhauCS repo is GGUF-only, the quantizable replacement run used
+`huihui-ai/Huihui-Qwen3.5-27B-abliterated`, which ships a full Transformers / Safetensors
+checkpoint and keeps the same Qwen 3.5 family.
+
+For this larger model, the original-model perplexity path had to be stabilized on a single
+RTX 3090 plus CPU offload because another user process was holding ~8 GiB on the second 3090.
+The resulting comparison uses a fixed regression slice rather than the full WikiText-2 sweep:
+`max_length=256`, `stride=256`, `max_windows=16`, `4096` scored tokens total.
+
+| Variant | Quantization time | WikiText-2 regression-slice PPL | Notes |
+| --- | --- | --- | --- |
+| Original BF16 | n/a | `11.6266` | single `3090` + CPU offload |
+| GPTQ-Pro 4-bit g32 | `2273.6s` | `12.0161` | `128` calibration samples, output size ~`18G` |
+
+This GPTQ-Pro run therefore added `+0.3895` PPL on the same 4,096-token slice. The absolute PPL is
+not directly comparable to the earlier 4B full-dataset numbers because the 27B run used much shorter
+context windows to stay within the shared-machine VRAM budget and still hit the torch fallback path
+for Qwen 3.5 linear attention.
+
+The saved quantization metadata for this run confirms the highest-quality settings used here:
+
+* `QuantizeConfig.gptq_pro(bits=4, group_size=32)`
+* `calibration_samples=128`
+* `vram_strategy=balanced`
+* `gc_mode=on_stage_end`
+* `auto_forward_data_parallel=false`
+* `wait_for_submodule_finalizers=true`
+* `moe.routing=ExpertsRoutingBypass(batch_size=2)`
+* `offload_to_disk=true`
+
+`vLLM 0.17.0` still did **not** deploy this replacement model cleanly in the tested environment. A
+one-shot offline `LLM.generate()` smoke test against the quantized checkpoint selected
+`gptq_marlin`, but then failed before generation with the same Qwen 3.5 config-family mismatch:
+`Qwen3_5TextConfig` vs `Qwen3_5Config`, this time through the multimodal renderer path.
+
+Useful repo-side tools for that workflow:
+
+```bash
+# regression-style perplexity
+python examples/benchmark/perplexity.py \
+  --model /path/to/quantized-model \
+  --tokenizer /path/to/source-model \
+  --is_quantized \
+  --trust_remote_code \
+  --backend marlin
+
+# task evaluation with vLLM
+python scripts/eval_model.py \
+  --model /path/to/quantized-model \
+  --tasks arc_challenge,mmlu_stem \
+  --backend marlin \
+  --use-vllm \
+  --trust-remote-code
+```
 
 
 ### Experimental Features
