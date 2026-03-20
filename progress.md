@@ -1081,3 +1081,68 @@ $ python -m pytest tests/qcfg/test_failsafe_meta.py -q
 - **`gptqmodel/utils/hf.py`**: Added `load_tokenizer_with_model_config()` and `ensure_hf_model_config_token_ids()` to propagate model config token IDs (bos, eos, pad) to Tokenicer wrappers, fixing tokenizer/config mismatch bugs.
 - **`gptqmodel/models/base.py`**: Replaced raw `Tokenicer.load()` calls with `load_tokenizer_with_model_config()` at all three entry points (init, quantize, load_quantized).
 - **`tests/test_hf_config_autofix.py`**: Unit tests for the new HF config autofix helpers.
+
+---
+
+## Qwen3.5-4B Quantization & Benchmark Results
+
+**Date:** 2026-03-20
+**Model:** [wangzhang/Qwen3.5-4B-abliterated](https://huggingface.co/wangzhang/Qwen3.5-4B-abliterated)
+**Architecture:** Qwen3.5 (hybrid linear + full attention, 32 layers, hidden_size=2560)
+**Quantization:** GPTQ 4-bit, group_size=128
+
+### Environment
+- Python 3.13.11, PyTorch 2.10.0, Transformers 5.3.0
+- GPTQModel 5.8.0 (dev), TritonV2 kernel backend
+- GPUs: 3× RTX 3090 (24 GB) + 2× RTX 3060 (12 GB), Driver 570.211.01
+
+### Quantization Summary
+
+| Metric | Value |
+|--------|-------|
+| FP16 model size | 7.83 GB |
+| GPTQ 4-bit model size | 2.92 GB |
+| Size reduction | 62.71% (4.91 GB saved) |
+| Effective BPW | 4.29 bpw |
+| Calibration samples | 128 (WikiText-2 train, min 512 chars) |
+| Quantization time | 181.4s (1× RTX 3090) |
+
+### Perplexity (WikiText-2, test split)
+
+| Configuration | Perplexity |
+|---------------|------------|
+| GPTQ 4-bit g128 | **8.6759** |
+
+Sliding-window evaluation: max_length=2048, stride=512, 578 windows, 297,053 tokens total.
+
+### Generation Speed Benchmark
+
+Greedy decoding (do_sample=False), 10 prompts averaged per setting.
+
+| GPU Config | max_new_tokens | Tokens/sec |
+|------------|---------------|------------|
+| **1× RTX 3090** | 128 | **24.16** |
+| 1× RTX 3090 | 256 | 24.31 |
+| 1× RTX 3090 | 512 | 24.53 |
+| **2× RTX 3090** | 128 | **17.62** |
+| 2× RTX 3090 | 256 | 17.73 |
+| 2× RTX 3090 | 512 | 17.67 |
+
+### Analysis
+
+- **1× RTX 3090** delivers ~24.3 tok/s sustained across all sequence lengths, consistent
+  with the model fitting entirely in 24 GB VRAM (2.92 GB quantized).
+- **2× RTX 3090** (device_map="auto") is **~27% slower** than 1× due to pipeline-parallel
+  cross-GPU communication overhead. Since the model fits in a single GPU's memory,
+  splitting across 2 GPUs adds inter-GPU transfer latency without a memory benefit.
+  Multi-GPU shines for models that exceed single-GPU capacity.
+- Throughput is stable across 128→512 token generation lengths, indicating the kernel
+  is compute-bound rather than launch-overhead-bound at these sequence lengths.
+- The TritonV2 kernel backend was auto-selected for inference.
+
+### Notes
+- Linear attention layers (conv1d, in_proj_a/b) were intentionally left unquantized
+  as they use different compute patterns from standard attention projections.
+- The `flash-linear-attention` fast path was unavailable; torch fallback was used for
+  the linear attention layers. Installing `fla` + `causal-conv1d` would likely improve
+  throughput further.
