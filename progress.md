@@ -1115,9 +1115,11 @@ $ python -m pytest tests/qcfg/test_failsafe_meta.py -q
 
 Sliding-window evaluation: max_length=2048, stride=512, 578 windows, 297,053 tokens total.
 
-### Generation Speed Benchmark
+### Baseline Generation Speed Benchmark (GPTQModel / Transformers runtime)
 
 Greedy decoding (do_sample=False), 10 prompts averaged per setting.
+This first-pass benchmark is preserved for comparison, but it is **not** the final answer to the
+corrected request because it used the GPTQModel / Transformers runtime rather than vLLM.
 
 | GPU Config | max_new_tokens | Tokens/sec |
 |------------|---------------|------------|
@@ -1128,7 +1130,7 @@ Greedy decoding (do_sample=False), 10 prompts averaged per setting.
 | 2× RTX 3090 | 256 | 17.73 |
 | 2× RTX 3090 | 512 | 17.67 |
 
-### Analysis
+### Baseline Analysis
 
 - **1× RTX 3090** delivers ~24.3 tok/s sustained across all sequence lengths, consistent
   with the model fitting entirely in 24 GB VRAM (2.92 GB quantized).
@@ -1140,9 +1142,85 @@ Greedy decoding (do_sample=False), 10 prompts averaged per setting.
   is compute-bound rather than launch-overhead-bound at these sequence lengths.
 - The TritonV2 kernel backend was auto-selected for inference.
 
-### Notes
+### Baseline Notes
 - Linear attention layers (conv1d, in_proj_a/b) were intentionally left unquantized
   as they use different compute patterns from standard attention projections.
 - The `flash-linear-attention` fast path was unavailable; torch fallback was used for
   the linear attention layers. Installing `fla` + `causal-conv1d` would likely improve
   throughput further.
+
+### Follow-up: Original PPL, GPTQ-Pro, and vLLM
+
+The corrected follow-up run compared against the original BF16 model, quantized a fresh
+`QuantizeConfig.gptq_pro()` checkpoint, and benchmarked that checkpoint with vLLM rather than the
+Transformers runtime.
+
+#### Original vs Quantized Perplexity (WikiText-2, test split)
+
+All three numbers below use the same sliding-window setup: `max_length=2048`, `stride=512`,
+578 windows, and 297,053 tokens total.
+
+| Configuration | Perplexity | Delta vs original |
+|---------------|------------|-------------------|
+| **Original BF16** | **8.3116** | baseline |
+| GPTQ 4-bit g128 | 8.6759 | +0.3643 |
+| **GPTQ-Pro 4-bit g128** | **8.6314** | **+0.3198** |
+
+GPTQ-Pro recovered `0.0445` PPL versus the earlier plain GPTQ run under the same evaluation setup.
+
+#### GPTQ-Pro Quantization Summary
+
+| Metric | Value |
+|--------|-------|
+| Model load time | 4.9s |
+| Quantization time | 324.9s |
+| Calibration samples | 128 |
+| Output format | GPTQ-compatible (`format=gptq`, `checkpoint_format=gptq`) |
+| Key quality knobs | `act_group_aware=true`, `mse=2.0`, adaptive damping, `SmoothAuto` failsafe |
+
+Saved GPTQ-Pro metadata confirms GAR, MSE search, adaptive damping, and failsafe smoothing while
+still producing a GPTQ-compatible checkpoint that vLLM can consume through Marlin.
+
+#### vLLM GPTQ-Pro Benchmark
+
+Stock vLLM 0.17.0 and the tested nightly build still do not load this `qwen3_5_text` checkpoint
+cleanly out of the box in this environment. The benchmark therefore used a temporary runtime patch
+that:
+
+- wraps the Hugging Face `qwen3_5_text` config in vLLM's `Qwen3_5Config`
+- forces `language_model_only=True`
+- skips multimodal / vision initialization
+- remaps checkpoint weights from `model.*` to `language_model.model.*`
+
+Once patched, vLLM selected `gptq_marlin` automatically and reported
+`Using MarlinLinearKernel for GPTQMarlinLinearMethod`.
+
+| GPU Config | TP Size | max_new_tokens | Tokens/sec | Engine init |
+|------------|---------|----------------|------------|-------------|
+| **1× RTX 3090** | 1 | 128 | **175.21** | 37.03s |
+| 1× RTX 3090 | 1 | 256 | 178.14 | 37.03s |
+| **2× RTX 3090** | 2 | 128 | **194.20** | 56.53s |
+| 2× RTX 3090 | 2 | 256 | 206.53 | 56.53s |
+
+#### Why the Earlier Speed Was Slow
+
+- The original speed run above was measured with the GPTQModel / Transformers inference path,
+  not vLLM, so it never exercised vLLM scheduling or Marlin's end-to-end runtime path.
+- Qwen3.5 linear-attention layers were on the torch fallback path because the
+  `flash-linear-attention` / `fla` and `causal-conv1d` fast-path dependencies were unavailable.
+- The plain GPTQ checkpoint already fit comfortably on one 24 GB RTX 3090, so the earlier
+  `device_map="auto"` two-GPU split only added inter-GPU communication overhead.
+- After switching to the GPTQ-Pro checkpoint and the vLLM `gptq_marlin` path, throughput improved
+  to roughly `7.3×` the earlier 1×-GPU Transformers result (`178.14 / 24.53`) and `11.7×` the
+  earlier 2×-GPU Transformers result (`206.53 / 17.67`).
+
+#### Follow-up Notes
+
+- Two-GPU tensor parallelism helped only modestly here: `+10.8%` at 128 tokens and `+15.9%`
+  at 256 tokens, which is expected for a 4-bit 4B model that already fits on one card.
+- The patched vLLM path still emits noisy shutdown warnings (`destroy_process_group()` /
+  `Engine core proc ... died unexpectedly`) after writing the benchmark JSON, so the text-only
+  Qwen3.5 integration should still be treated as upstream-incomplete.
+- vLLM also logged an unrelated plugin load error (`ModuleNotFoundError: No module named 'reap'`)
+  and FLA shape warnings during warmup/inference. These did not prevent successful runs, but they
+  are worth cleaning up before treating this path as production-ready.
