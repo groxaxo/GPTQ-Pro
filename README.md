@@ -542,6 +542,28 @@ Vanilla `vLLM 0.17.0` failed on the original, plain GPTQ, and GPTQ-Pro checkpoin
 token with the same `Qwen3_5TextConfig` vs `Qwen3_5Config` type mismatch. The detailed comparison
 is documented in [`docs/qwen35_vllm_comparison.md`](docs/qwen35_vllm_comparison.md).
 
+For local `qwen3_5_text` checkpoints in this repository, use
+`scripts/serve_vllm_qwen35.py` instead of calling `vllm serve` directly. The
+wrapper applies the text-only `Qwen3.5` serving settings documented above,
+patches vLLM's renderer/model-registry startup so `Qwen3_5TextConfig`
+checkpoints stay on the causal-LM path, restores the hybrid/M-RoPE interfaces
+needed by Qwen3.5 text-only checkpoints, maps vLLM's startup-time NVML scan to
+the GPUs already selected via `CUDA_VISIBLE_DEVICES`, and installs a small
+`LD_PRELOAD` NVML shim so NCCL tensor-parallel startup can skip broken physical
+GPUs on shared hosts.
+
+For the exact launch commands that match the working `vLLM + gptq_marlin` path,
+see [`docs/qwen35_vllm_launch.md`](docs/qwen35_vllm_launch.md).
+
+In the shared-host validation for
+`lukey03/Qwen3.5-9B-abliterated` -> GPTQ-Pro 4-bit g128, quantization took
+`415.2s`, the earlier `GPTQModel.generate()` path measured only `15.61 tok/s`
+on `1x GPU` and `10.44 tok/s` on `2x GPU`, and the corrected warmed vLLM +
+`gptq_marlin` path reached about `104.96 tok/s` on `1x 3090` and `154.26 tok/s`
+on `2x 3090` (with `--gpu-memory-utilization 0.4` on the 2-GPU shared-host
+run). First-request latency is much slower than steady-state throughput because
+`torch.compile` and CUDA-graph capture warm the model on first use.
+
 #### Important limitation: GGUF-only Qwen 3.5 35B-A3B repositories
 
 The repository `HauhauCS/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive` currently publishes
