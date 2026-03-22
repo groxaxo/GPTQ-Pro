@@ -121,3 +121,89 @@ For `wangzhang/Qwen3.5-4B-abliterated` and its two local 4-bit derivatives, the 
 
 If the goal is production deployment without custom runtime patching, the blocker is still
 upstream vLLM support for `qwen3_5_text`.
+
+## Follow-up: local `lukey03/Qwen3.5-9B-abliterated` GPTQ-Pro serve path
+
+The later local validation on `lukey03/Qwen3.5-9B-abliterated` answered the
+more operational question for this repository: **why did the first 9B benchmark
+look slow, and what does the corrected vLLM path actually do?**
+
+### Quantization / quality snapshot
+
+| Artifact | Quantization time | Perplexity |
+|----------|-------------------|------------|
+| Original BF16 | n/a | `8.8980` |
+| GPTQ-Pro 4-bit g128 | `415.2s` | `9.2119` |
+
+### Why the earlier speed result looked bad
+
+The original throughput test for this 9B checkpoint used
+`GPTQModel.load(...).generate()` on the Triton / Transformers path, not the
+intended `vLLM` + `gptq_marlin` runtime. That is why the first numbers were:
+
+| Runtime path | 1 GPU | 2 GPU |
+|--------------|-------|-------|
+| `GPTQModel.generate()` diagnostic path | `15.61 tok/s` | `10.44 tok/s` |
+
+Those numbers were useful for diagnosis, but they were **not** measurements of
+the optimized serving path for GPTQ-Pro artifacts in this repository.
+
+### Corrected vLLM deployment result
+
+The local wrapper / patch stack now does all of the following for
+`qwen3_5_text` checkpoints:
+
+- forces text-only `Qwen3.5` serving settings
+- keeps the checkpoint on `Qwen3_5ForCausalLM`
+- restores the hybrid + M-RoPE interfaces required for Qwen3.5's hybrid
+  attention / linear-attention cache layout
+- patches vLLM's Python-side NVML enumeration to the selected visible GPUs
+- installs a small `LD_PRELOAD` NVML remap shim so NCCL tensor-parallel startup
+  can ignore a broken physical GPU during topology discovery
+
+With that corrected path, vLLM resolves to `Qwen3_5ForCausalLM`, converts the
+checkpoint to `gptq_marlin`, and uses `MarlinLinearKernel`.
+
+| Runtime path | Notes | Tokens/sec |
+|--------------|-------|------------|
+| vLLM + `gptq_marlin` on `1x RTX 3090` | warmed 64-token completion | `104.96 tok/s` |
+| vLLM + `gptq_marlin` on `2x RTX 3090` | warmed 64-token completion, `tensor_parallel_size=2`, `gpu_memory_utilization=0.4` on the shared host | `154.26 tok/s` |
+
+### Operational caveats observed on the 9B run
+
+1. **Cold-start requests are much slower than steady-state requests.**  
+   The first request after startup pays for `torch.compile` and CUDA-graph
+   capture. On this host, that made the first completion look dramatically
+   slower than the second warmed run.
+
+2. **The 2-GPU tensor-parallel path is now functionally fixed, but host
+   conditions still matter.**  
+   The local NCCL/NVML shim was required because one physical GPU on the host
+   returns `NVMLError_Unknown` during topology discovery. After that was fixed,
+   a separate shared-host VRAM constraint still required lowering
+   `gpu_memory_utilization` from the default `0.9` to `0.4`.
+
+3. **TP=2 scaling is still below ideal on this host.**  
+   vLLM reported that custom all-reduce was disabled because GPU P2P capability
+   was unavailable or the P2P test failed on the selected GPU pair. That
+   explains why `2x GPU` improved throughput versus `1x GPU`, but not by a full
+   `2x`.
+
+4. **The standalone `gptq_pro` CUDA scaffold is still not the serving kernel.**  
+   The production-fast runtime for these GPTQ-Pro checkpoints remains
+   `vLLM` + `gptq_marlin`. The separate `gptqmodel_ext/gptq_pro/` scaffold is
+   validated for Ampere correctness, but it is not yet wired into Python
+   inference dispatch.
+
+### Remaining Ampere work after the runtime fixes
+
+The remaining Ampere-specific kernel work is still performance engineering, not
+a correctness blocker:
+
+- swizzled `ldmatrix` path
+- real `cp.async` pipelining
+- larger multi-warp tiles
+- coalesced epilogue / transpose store path
+- Paro metadata integration
+- INT8 sibling / rescue path
+- Nsight-guided tuning
