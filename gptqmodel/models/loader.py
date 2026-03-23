@@ -407,6 +407,10 @@ def ModelLoader(cls):
             log.info("Loading Quantized Model: Auto fix `dtype` to `torch.float16`")
             dtype = torch.float16
 
+        if backend == BACKEND.GPTQ_PRO:
+            log.info("Loading Quantized Model: Auto fix `dtype` to `torch.float16`")
+            dtype = torch.float16
+
         # inject adapter into qcfg
         if adapter is not None:
             qcfg.adapter = adapter

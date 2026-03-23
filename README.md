@@ -164,7 +164,9 @@ GPT-QModel is a modular design supporting multiple quantization methods and feat
 ## Features
 * ✨ Native integration with HF [Transformers](https://github.com/huggingface/transformers), [Optimum](https://github.com/huggingface/optimum), and [Peft](https://github.com/huggingface/peft)
 * 🚀 [vLLM](https://github.com/vllm-project/vllm) and [SGLang](https://github.com/sgl-project/sglang) inference integration for quantized models with format = `FORMAT.[GPTQ/AWQ]`
-* ✨ GPTQ, AWQ, and QQQ quantization format with hardware-accelerated inference kernels. 
+* ✨ GPTQ, AWQ, and QQQ quantization format with hardware-accelerated inference kernels.
+* 🚀 Local inference backends via `GPTQModel.load(..., backend=BACKEND.<...>)`: `MARLIN`, `MARLIN_FP16`, `MACHETE`, `EXLLAMA_V2`, `TRITON`, `BITBLAS`, `TORCH`, `QQQ`, plus experimental `GPTQ_PRO` for Ampere symmetric INT4 checkpoints with `desc_act=False`.
+* ✨ `model.serve(host, port)` launches an OpenAI-compatible FastAPI server at `/v1/chat/completions`.
 * 🚀 Quantize MoE models with ease even with extreme routing activation bias via `Moe.Routing` and/or `FailSafe`.
 * 🚀 Data Parallelism for 80%+ quantization speed reduction with Multi-GPU.
 * 🚀 Optimized for Python >= 3.13t (free threading) with lock-free threading.
@@ -528,9 +530,15 @@ the relevant standalone CUDA files are:
 
 These are the files used for the standalone scaffold / validator flow. They now cover a
 functional single-warp `sm80` Tensor Core path with explicit A/B/S staging and end-to-end
-validation, but they are still separate from the current Python inference dispatch path and do
-not yet implement the larger multi-warp `cp.async` / `ldmatrix` pipeline discussed in
-`Project.md` / `progress.md`.
+validation, and this repository now exposes that scaffold as an **optional**
+`BACKEND.GPTQ_PRO` local runtime for explicit `GPTQModel.load(..., backend=BACKEND.GPTQ_PRO)`
+use on Ampere-class CUDA systems.
+
+Current runtime limits are intentionally narrow: `4-bit`, symmetric GPTQ, `torch.float16`,
+and `desc_act=False` / sequential `g_idx` only. It derives a non-persistent byte-packed weight
+buffer during `post_init()` for the CUDA kernel, but it does **not** yet replace the larger
+production paths (`Marlin`, `Machete`, `vLLM`) or implement the planned multi-warp
+`cp.async` / `ldmatrix` pipeline discussed in `Project.md` / `progress.md`.
 
 For the `wangzhang/Qwen3.5-4B-abliterated` text-only follow-up, the measured results were:
 

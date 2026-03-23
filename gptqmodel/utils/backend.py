@@ -21,6 +21,7 @@ class BACKEND(str, Enum):
     MACHETE = "machete" # CUTLASS-based kernel optimized for Hopper (SM90+)
     MARLIN = "marlin" # FASTEST: marlin reduce ops in fp32 (higher precision -> more accurate, slightly slower)
     MARLIN_FP16 = "marlin_fp16" # FASTEST and then some: marlin reduce ops in fp16 (lower precision -> less accurate, slightly faster)
+    GPTQ_PRO = "gptq_pro" # experimental Ampere-only local kernel path for symmetric GPTQ INT4
     BITBLAS = "bitblas" # EXTREMELY FAST: speed at the cost of 10+ minutes of AOT (ahead of time compilation with disk cache)
     HF_KERNEL = "hf_kernel" # FAST: optimized from HuggingFace kernels-community
 

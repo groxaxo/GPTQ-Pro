@@ -553,6 +553,7 @@ def _env_enabled_any(names, default="1") -> bool:
 
 
 BUILD_MARLIN = _env_enabled_any(os.environ.get("GPTQMODEL_BUILD_MARLIN", "1"))
+BUILD_GPTQ_PRO = _env_enabled_any(os.environ.get("GPTQMODEL_BUILD_GPTQ_PRO", "1"))
 BUILD_MACHETE = _env_enabled(os.environ.get("GPTQMODEL_BUILD_MACHETE", "0"))
 BUILD_EXLLAMA_V2 = _env_enabled(os.environ.get("GPTQMODEL_BUILD_EXLLAMA_V2", "1"))
 BUILD_QQQ = _env_enabled(os.environ.get("GPTQMODEL_BUILD_QQQ", "1"))
@@ -723,6 +724,19 @@ if BUILD_CUDA_EXT == "1":
                                 "gptqmodel_ext/marlin/gptq_marlin_repack.cu",
                                 "gptqmodel_ext/marlin/awq_marlin_repack.cu",
                             ] + marlin_template_kernel_srcs,
+                            extra_link_args=extra_link_args,
+                            extra_compile_args=extra_compile_args,
+                        )
+                    ]
+
+                if BUILD_GPTQ_PRO:
+                    extensions += [
+                        cpp_ext.CUDAExtension(
+                            "gptqmodel_gptq_pro_kernels",
+                            [
+                                "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp",
+                                "gptqmodel_ext/gptq_pro/gptq_pro_kernel.cu",
+                            ],
                             extra_link_args=extra_link_args,
                             extra_compile_args=extra_compile_args,
                         )

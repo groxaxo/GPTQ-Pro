@@ -173,3 +173,11 @@ void mma_f32_m16n8k16(const uint32_t RA[4],
         :  "r"(RA[0]),  "r"(RA[1]),  "r"(RA[2]),  "r"(RA[3]),
            "r"(RB[0]),  "r"(RB[1]));
 }
+
+cudaError_t gptq_pro_gemm(
+    const half*    A,
+    const uint8_t* B_packed,
+    const half*    S,
+    half*          C,
+    int M, int N, int K, int group_size,
+    cudaStream_t stream);
