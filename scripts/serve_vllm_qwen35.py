@@ -150,8 +150,24 @@ def _load_local_config(model_path: str) -> dict | None:
         return json.load(handle)
 
 
-def _is_local_qwen35_text_checkpoint(model_path: str) -> bool:
-    config = _load_local_config(model_path)
+def _load_checkpoint_config(model_path: str) -> dict | None:
+    local_config = _load_local_config(model_path)
+    if local_config is not None:
+        return local_config
+
+    try:
+        from transformers import AutoConfig
+    except ImportError:
+        return None
+
+    try:
+        return AutoConfig.from_pretrained(model_path, trust_remote_code=True).to_dict()
+    except (OSError, ValueError):
+        return None
+
+
+def _is_qwen35_text_checkpoint(model_path: str) -> bool:
+    config = _load_checkpoint_config(model_path)
     return bool(config and config.get("model_type") == "qwen3_5_text")
 
 
@@ -173,7 +189,7 @@ def main() -> None:
     import uvloop
 
     parser = FlexibleArgumentParser(
-        description="vLLM OpenAI-compatible server for local qwen3_5_text GPTQ checkpoints."
+        description="vLLM OpenAI-compatible server for qwen3_5_text GPTQ checkpoints."
     )
     parser = make_arg_parser(parser)
     args = parser.parse_args()
@@ -181,7 +197,7 @@ def main() -> None:
     if model_path:
         args.model = model_path
 
-    if model_path and _is_local_qwen35_text_checkpoint(model_path):
+    if model_path and _is_qwen35_text_checkpoint(model_path):
         args.language_model_only = True
         args.skip_mm_profiling = True
         args.limit_mm_per_prompt = dict(DEFAULT_MM_LIMITS)

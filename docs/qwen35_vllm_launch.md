@@ -1,6 +1,6 @@
-# Launching local Qwen 3.5 GPTQ / GPTQ-Pro checkpoints with the same vLLM path that hit ~100+ tok/s
+# Launching Qwen 3.5 GPTQ / GPTQ-Pro checkpoints with the same vLLM path that hit ~100+ tok/s
 
-This document shows the **actual serving path** used for the local `qwen3_5_text` checkpoints that reached:
+This document shows the **actual serving path** used for the `qwen3_5_text` checkpoints that reached:
 
 - **104.96 tok/s** on **1x RTX 3090**
 - **154.26 tok/s** on **2x RTX 3090** (`tensor_parallel_size=2`, `gpu_memory_utilization=0.4` on the shared host)
@@ -12,7 +12,7 @@ They came from **vLLM + `gptq_marlin`**, launched through this repo's wrapper:
 
 ## Why this wrapper exists
 
-For the local `qwen3_5_text` checkpoints used in this repo, calling plain `vllm serve ...` directly was not the reliable path.
+For the `qwen3_5_text` checkpoints used in this repo, calling plain `vllm serve ...` directly was not the reliable path.
 The wrapper exists because it:
 
 1. forces the required **text-only Qwen 3.5** serving settings
@@ -90,7 +90,7 @@ python scripts/serve_vllm_qwen35.py \
 ### Notes
 
 - `CUDA_VISIBLE_DEVICES=0` selects the single physical GPU to use.
-- The wrapper auto-enables the text-only Qwen 3.5 settings for local `qwen3_5_text` checkpoints.
+- The wrapper auto-enables the text-only Qwen 3.5 settings for local folders and Hub repo IDs whose config resolves to `qwen3_5_text`.
 - You do **not** need to manually set `language_model_only=True` through the CLI; the wrapper handles it.
 
 ## 2) Two-GPU launch

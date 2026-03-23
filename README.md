@@ -569,7 +569,7 @@ Vanilla `vLLM 0.17.0` failed on the original, plain GPTQ, and GPTQ-Pro checkpoin
 token with the same `Qwen3_5TextConfig` vs `Qwen3_5Config` type mismatch. The detailed comparison
 is documented in [`docs/qwen35_vllm_comparison.md`](docs/qwen35_vllm_comparison.md).
 
-For local `qwen3_5_text` checkpoints in this repository, use
+For local or Hugging Face `qwen3_5_text` checkpoints in this repository, use
 `scripts/serve_vllm_qwen35.py` instead of calling `vllm serve` directly. The
 wrapper applies the text-only `Qwen3.5` serving settings documented above,
 patches vLLM's renderer/model-registry startup so `Qwen3_5TextConfig`
@@ -577,7 +577,8 @@ checkpoints stay on the causal-LM path, restores the hybrid/M-RoPE interfaces
 needed by Qwen3.5 text-only checkpoints, maps vLLM's startup-time NVML scan to
 the GPUs already selected via `CUDA_VISIBLE_DEVICES`, and installs a small
 `LD_PRELOAD` NVML shim so NCCL tensor-parallel startup can skip broken physical
-GPUs on shared hosts.
+GPUs on shared hosts. It now auto-detects `qwen3_5_text` from either a local
+`config.json` or a Hub repo ID's `AutoConfig`.
 
 For the exact launch commands that match the working `vLLM + gptq_marlin` path,
 see [`docs/qwen35_vllm_launch.md`](docs/qwen35_vllm_launch.md).
