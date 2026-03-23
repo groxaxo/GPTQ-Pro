@@ -7,6 +7,7 @@ REPO_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 PRIMARY_GPU="${1:-${GPTQ_PRO_VALIDATE_GPU:-2}}"
 FALLBACK_GPU="${GPTQ_PRO_VALIDATE_FALLBACK_GPU:-3}"
 VALIDATE_SRC="${REPO_ROOT}/gptqmodel_ext/gptq_pro/gptq_pro_validate.cu"
+KERNEL_SRC="${REPO_ROOT}/gptqmodel_ext/gptq_pro/gptq_pro_kernel.cu"
 OUT_BIN="${TMPDIR:-/tmp}/gptq_pro_validate_$(date +%s)"
 
 cleanup() {
@@ -20,7 +21,7 @@ run_on_gpu() {
     gpu_name=$(nvidia-smi -i "${gpu_index}" --query-gpu=name --format=csv,noheader | tr -d '[:space:]')
 
     echo "==> Building standalone validator"
-    nvcc -arch=sm_80 -std=c++17 "${VALIDATE_SRC}" -o "${OUT_BIN}"
+    nvcc -arch=sm_80 -std=c++17 "${VALIDATE_SRC}" "${KERNEL_SRC}" -o "${OUT_BIN}"
 
     echo "==> Selected GPU ${gpu_index}"
     nvidia-smi -i "${gpu_index}" \

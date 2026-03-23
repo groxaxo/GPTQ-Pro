@@ -526,9 +526,11 @@ the relevant standalone CUDA files are:
 * `gptqmodel_ext/gptq_pro/gptq_pro_kernel.cu`
 * `gptqmodel_ext/gptq_pro/gptq_pro_validate.cu`
 
-These are the files used for the standalone scaffold / validator flow. They are useful for
-reproducing the kernel-side work, but they are still separate from the current Python inference
-dispatch path.
+These are the files used for the standalone scaffold / validator flow. They now cover a
+functional single-warp `sm80` Tensor Core path with explicit A/B/S staging and end-to-end
+validation, but they are still separate from the current Python inference dispatch path and do
+not yet implement the larger multi-warp `cp.async` / `ldmatrix` pipeline discussed in
+`Project.md` / `progress.md`.
 
 For the `wangzhang/Qwen3.5-4B-abliterated` text-only follow-up, the measured results were:
 

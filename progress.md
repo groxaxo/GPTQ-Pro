@@ -1047,11 +1047,22 @@ The updated scaffold was verified locally with:
 
 This is still a **standalone scaffold**, not the full final kernel from Alpha's plan:
 
-- async global→shared staging in `gptq_pro_gemm_kernel` remains placeholder
-- Paro rotation metadata is still identity-only
-- the direct global-store epilogue is correct but not yet coalesced via a shared-memory transpose buffer
-- the PTX-correct B-fragment ownership is now documented and validated, but the future global-to-shared B packer still has to materialize that exact layout from real GPTQ-packed weights
-- the INT8 sibling kernel and benchmark suite remain future work
+- `gptq_pro_gemm_kernel` is now end-to-end functional on `sm80`, but it is a compact single-warp scaffold rather than the planned multi-warp Ampere kernel.
+- The previous placeholder path was replaced with explicit shared-memory staging for activations, per-column scales, and packed INT4 B fragments; helper-level validation alone is no longer the only safety net.
+- The invalid `ldmatrix` path that faulted with `cudaErrorMisalignedAddress` was removed in favor of validator-backed manual A-fragment packing for the current scaffold.
+- Paro rotation metadata is still not wired into the runtime path.
+- The direct global-store epilogue is correct but not yet coalesced via a shared-memory transpose buffer.
+- The runtime currently models symmetric INT4 with implicit zero-point `8` and requires `group_size` to be a multiple of `16`; asymmetric qzero metadata still needs its own path if required.
+- The INT8 sibling kernel, real `cp.async` pipeline, and benchmark suite remain future work.
+
+### Remaining Speed Headroom
+
+- Restore a validated XOR-swizzled `ldmatrix` A-load path once the shared-memory layout is finalized for this standalone kernel.
+- Reintroduce real Ampere async staging (`cp.async` / deeper pipelining) after the global->shared contract is locked down.
+- Expand from the current `1 warp x 16x64x16` scaffold to the planned larger CTA tiles (`64x128` INT4, separate INT8 rescue path) for better memory/TC overlap.
+- Replace the direct epilogue stores with a coalesced shared-memory transpose buffer.
+- Fuse real Paro metadata and benchmark transform cost / bank conflicts instead of skipping the runtime transform path.
+- Add Nsight Compute / Systems microbenchmarks so future tuning is driven by measured stall reasons rather than source inspection alone.
 
 ---
 

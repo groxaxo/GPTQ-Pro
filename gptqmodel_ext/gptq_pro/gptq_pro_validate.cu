@@ -13,14 +13,24 @@
  * buffer that can be inspected from the host.  Both kernels target sm80+.
  *
  * Build (standalone, no PyTorch):
- *   nvcc -arch=sm_80 -std=c++17 -I.. gptq_pro_validate.cu -o gptq_pro_validate
+ *   nvcc -arch=sm_80 -std=c++17 gptq_pro_validate.cu gptq_pro_kernel.cu -o gptq_pro_validate
  */
 
 #include "gptq_pro_kernel.cuh"
 
 #include <cstdio>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <vector>
+
+cudaError_t gptq_pro_gemm(
+    const half*    A,
+    const uint8_t* B_packed,
+    const half*    S,
+    half*          C,
+    int M, int N, int K, int group_size,
+    cudaStream_t stream);
 
 #define CHECK_CUDA(expr)                                                         \
     do {                                                                         \
@@ -242,6 +252,138 @@ static void fill_bfrag_test_image(uint32_t* words) {
     }
 }
 
+static void fill_end_to_end_a(std::vector<half>& a, int M, int K) {
+    for (int m = 0; m < M; ++m) {
+        for (int k = 0; k < K; ++k) {
+            const float value = 0.125f * static_cast<float>(m + 1)
+                              + 0.03125f * static_cast<float>((k % 7) + 1);
+            a[m * K + k] = __float2half(value);
+        }
+    }
+}
+
+static void fill_end_to_end_b(std::vector<uint8_t>& b_packed, int K, int N) {
+    const int packed_rows = (K + 1) / 2;
+    for (int kp = 0; kp < packed_rows; ++kp) {
+        const int k0 = kp * 2;
+        for (int n = 0; n < N; ++n) {
+            const uint8_t lo = static_cast<uint8_t>(8 + ((k0 + 2 * n) % 3));
+            uint8_t hi = static_cast<uint8_t>(8 + (((k0 + 1) + 2 * n) % 3));
+            if (k0 + 1 >= K) {
+                hi = 8;
+            }
+            b_packed[kp * N + n] = static_cast<uint8_t>(lo | (hi << 4));
+        }
+    }
+}
+
+static void fill_end_to_end_s(std::vector<half>& scales, int groups, int N) {
+    for (int g = 0; g < groups; ++g) {
+        for (int n = 0; n < N; ++n) {
+            const float scale = 0.125f * static_cast<float>(1 + ((g + n) % 4));
+            scales[g * N + n] = __float2half(scale);
+        }
+    }
+}
+
+static float dequant_weight_ref(const std::vector<uint8_t>& b_packed,
+                                const std::vector<half>& scales,
+                                int N, int group_size,
+                                int k, int n) {
+    const uint8_t byte = b_packed[(k >> 1) * N + n];
+    const uint32_t nibble = (k & 1) ? ((byte >> 4) & 0xFu) : (byte & 0xFu);
+    const float scale = __half2float(scales[(k / group_size) * N + n]);
+    return scale * (static_cast<float>(nibble) - 8.0f);
+}
+
+static bool run_end_to_end_case(int M, int N, int K, int group_size, const char* label) {
+    const int packed_rows = (K + 1) / 2;
+    const int groups = (K + group_size - 1) / group_size;
+
+    std::vector<half> h_a(M * K);
+    std::vector<uint8_t> h_b(packed_rows * N);
+    std::vector<half> h_s(groups * N);
+    std::vector<half> h_c(M * N, __float2half(0.0f));
+
+    fill_end_to_end_a(h_a, M, K);
+    fill_end_to_end_b(h_b, K, N);
+    fill_end_to_end_s(h_s, groups, N);
+
+    half* d_a = nullptr;
+    half* d_s = nullptr;
+    half* d_c = nullptr;
+    uint8_t* d_b = nullptr;
+
+    auto fail = [&](const char* what, cudaError_t err) {
+        std::fprintf(stderr, "  FAIL %s: %s\n", what, cudaGetErrorString(err));
+        if (d_a) cudaFree(d_a);
+        if (d_s) cudaFree(d_s);
+        if (d_c) cudaFree(d_c);
+        if (d_b) cudaFree(d_b);
+        return false;
+    };
+
+    cudaError_t err = cudaMalloc(&d_a, h_a.size() * sizeof(half));
+    if (err != cudaSuccess) return fail("cudaMalloc(d_a)", err);
+    err = cudaMalloc(&d_s, h_s.size() * sizeof(half));
+    if (err != cudaSuccess) return fail("cudaMalloc(d_s)", err);
+    err = cudaMalloc(&d_c, h_c.size() * sizeof(half));
+    if (err != cudaSuccess) return fail("cudaMalloc(d_c)", err);
+    err = cudaMalloc(&d_b, h_b.size() * sizeof(uint8_t));
+    if (err != cudaSuccess) return fail("cudaMalloc(d_b)", err);
+
+    err = cudaMemcpy(d_a, h_a.data(), h_a.size() * sizeof(half), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) return fail("cudaMemcpy(d_a)", err);
+    err = cudaMemcpy(d_s, h_s.data(), h_s.size() * sizeof(half), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) return fail("cudaMemcpy(d_s)", err);
+    err = cudaMemcpy(d_b, h_b.data(), h_b.size() * sizeof(uint8_t), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) return fail("cudaMemcpy(d_b)", err);
+    err = cudaMemset(d_c, 0, h_c.size() * sizeof(half));
+    if (err != cudaSuccess) return fail("cudaMemset(d_c)", err);
+
+    err = gptq_pro_gemm(d_a, d_b, d_s, d_c, M, N, K, group_size, 0);
+    if (err != cudaSuccess) return fail("gptq_pro_gemm launch", err);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) return fail("cudaDeviceSynchronize()", err);
+    err = cudaMemcpy(h_c.data(), d_c, h_c.size() * sizeof(half), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) return fail("cudaMemcpy(h_c)", err);
+
+    int mismatches = 0;
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            float acc = 0.0f;
+            for (int k = 0; k < K; ++k) {
+                const float a = __half2float(h_a[m * K + k]);
+                const float w = dequant_weight_ref(h_b, h_s, N, group_size, k, n);
+                acc = fma_f32_from_f16_inputs_proxy(a, w, acc);
+            }
+            const float expect = __half2float(__float2half(acc));
+            const float got = __half2float(h_c[m * N + n]);
+            if (fabsf(got - expect) > 1e-3f) {
+                if (mismatches < 8) {
+                    std::fprintf(stderr,
+                                 "  FAIL %s at (%d, %d): got=%f expect=%f\n",
+                                 label, m, n, got, expect);
+                }
+                ++mismatches;
+            }
+        }
+    }
+
+    cudaFree(d_a);
+    cudaFree(d_s);
+    cudaFree(d_c);
+    cudaFree(d_b);
+
+    if (mismatches != 0) {
+        std::fprintf(stderr, "  %s mismatches: %d\n", label, mismatches);
+        return false;
+    }
+
+    std::printf("  PASS %s\n", label);
+    return true;
+}
+
 #ifndef GPTQ_PRO_VALIDATE_SKIP_MAIN
 
 int main() {
@@ -435,8 +577,17 @@ int main() {
     CHECK_CUDA(cudaFree(d_result2));
 
     // -----------------------------------------------------------------------
-    int total = pass1 + pass2;
-    int total_max = 2 * GPTQ_PRO_WARP_SIZE;
+    // TODO 3 — End-to-end kernel validation
+    // -----------------------------------------------------------------------
+    printf("=== TODO 3: end-to-end kernel validation ===\n");
+    int pass3 = 0;
+    pass3 += run_end_to_end_case(16, 64, 16, 16, "aligned-16x64x16") ? 1 : 0;
+    pass3 += run_end_to_end_case(13, 41, 29, 16, "edge-13x41x29") ? 1 : 0;
+    printf("  %d / %d cases passed\n", pass3, 2);
+
+    // -----------------------------------------------------------------------
+    int total = pass1 + pass2 + pass3;
+    int total_max = 2 * GPTQ_PRO_WARP_SIZE + 2;
     printf("\n=== Overall: %d / %d checks passed ===\n", total, total_max);
     return (total == total_max) ? 0 : 1;
 }
