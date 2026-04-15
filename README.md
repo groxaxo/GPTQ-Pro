@@ -551,6 +551,21 @@ Read the [`gptqmodel/models/llama.py`](https://github.com/ModelCloud/GPTQModel/b
 
 ### Evaluation and Quality Benchmarks
 
+#### Gemma 4 Ampere validation (04/15/2026)
+- Hardware: 2x NVIDIA GeForce RTX 3060 (sm_86) used for validation; also validated on RTX 3090.
+- Model: local Gemma 4 GPTQ quantized model at `/home/op/outputs/gemma4-abliterated/gptq-pro-4bit`
+- Environment: Torch 2.10.0+cu128, nvcc 12.0, Triton 3.6.0
+- Load (device_map='balanced', backend=AUTO) wall time: 149.16 s (first cold run, includes Marlin JIT build)
+- Kernel: MarlinLinear (Marlin torch.ops JIT compiled during load and cached)
+- Device map entries: 420
+- Generation: 12 new tokens -> 1.18 s (single-shot)
+
+Notes:
+- The Marlin JIT uses host nvcc flags; a compatibility fix was applied so unsupported nvcc flags (e.g. `-static-global-template-stub=false`) are only used when the local `nvcc` supports them.
+- Regression tests added: `tests/test_model_definition_exports.py` (passed) and MiniMax smoke test moved to `tests/models/test_minimax_m2_hf.py`.
+
+
+
 GPT-QModel evaluation is integrated into [Evalution](https://github.com/modelcloud/Evalution).
 We highly recommend using Evalution to validate post-quantization model quality. Regression-only language-model metrics are deprecated in this guide.
 
