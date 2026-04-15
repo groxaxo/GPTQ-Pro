@@ -18,8 +18,20 @@ import unittest  # noqa: E402
 import torch  # noqa: E402
 
 from gptqmodel import BACKEND, GPTQModel  # noqa: E402
-from gptqmodel.quantization import FORMAT, FORMAT_FIELD_CHECKPOINT, QuantizeConfig  # noqa: E402
-from gptqmodel.quantization.config import GPTAQConfig, HessianConfig, VramStrategy  # noqa: E402
+from gptqmodel.quantization import (  # noqa: E402
+    FORMAT,
+    FORMAT_FIELD_CHECKPOINT,
+    FORMAT_FIELD_CODE,
+    METHOD_FIELD_CODE,
+    QuantizeConfig,
+)
+from gptqmodel.quantization.config import (  # noqa: E402  # noqa: E402
+    METHOD,
+    GGUFConfig,
+    GPTAQConfig,
+    HessianConfig,
+    VramStrategy,
+)
 
 
 class TestSerialization(unittest.TestCase):
@@ -49,7 +61,23 @@ class TestSerialization(unittest.TestCase):
             with open(os.path.join(tmpdir, "quantize_config.json"), "r") as f:
                 quantize_config = json.load(f)
 
+            self.assertEqual(quantize_config[METHOD_FIELD_CODE], "gptq")
+            self.assertEqual(quantize_config["quant_method"], "gptq")
+            self.assertEqual(quantize_config[FORMAT_FIELD_CODE], "gptq")
             self.assertEqual(quantize_config[FORMAT_FIELD_CHECKPOINT], "gptq")
+
+    def test_legacy_checkpoint_format_load_normalizes_to_format(self):
+        cfg = QuantizeConfig.from_quant_config(
+            {
+                "bits": 4,
+                "checkpoint_format": "gguf",
+            }
+        )
+
+        self.assertIsInstance(cfg, GGUFConfig)
+        self.assertEqual(cfg.format, "q_0")
+        self.assertEqual(cfg.method, METHOD.GGUF)
+        self.assertEqual(cfg.quant_method, METHOD.GGUF)
 
     def test_quantize_config_meta_only_fields_serialization(self):
         cfg = QuantizeConfig(
@@ -64,7 +92,10 @@ class TestSerialization(unittest.TestCase):
                 chunk_bytes=4096,
                 staging_dtype=torch.bfloat16,
             ),
-            vram_strategy=VramStrategy.BALANCED,
+            dense_vram_strategy=VramStrategy.BALANCED,
+            dense_vram_strategy_devices=["cuda:0", "cuda:1"],
+            moe_vram_strategy=VramStrategy.BALANCED,
+            moe_vram_strategy_devices=["cuda:2", "cuda:3"],
         )
 
         payload = cfg.to_dict()
@@ -72,7 +103,7 @@ class TestSerialization(unittest.TestCase):
         self.assertIsInstance(meta, dict)
 
         meta_only_fields = [
-            "failsafe",
+            "fallback",
             "gptaq",
             "offload_to_disk",
             "offload_to_disk_path",
@@ -81,7 +112,10 @@ class TestSerialization(unittest.TestCase):
             "mock_quantization",
             "act_group_aware",
             "hessian",
-            "vram_strategy",
+            "dense_vram_strategy",
+            "dense_vram_strategy_devices",
+            "moe_vram_strategy",
+            "moe_vram_strategy_devices",
         ]
         for field in meta_only_fields:
             self.assertNotIn(field, payload)
@@ -98,7 +132,10 @@ class TestSerialization(unittest.TestCase):
         self.assertEqual(meta["hessian"]["chunk_size"], cfg.hessian.chunk_size)
         self.assertEqual(meta["hessian"]["chunk_bytes"], cfg.hessian.chunk_bytes)
         self.assertEqual(meta["hessian"]["staging_dtype"], "bfloat16")
-        self.assertEqual(meta["vram_strategy"], cfg.vram_strategy.value)
+        self.assertEqual(meta["dense_vram_strategy"], cfg.dense_vram_strategy.value)
+        self.assertEqual(meta["dense_vram_strategy_devices"], cfg.dense_vram_strategy_devices)
+        self.assertEqual(meta["moe_vram_strategy"], cfg.moe_vram_strategy.value)
+        self.assertEqual(meta["moe_vram_strategy_devices"], cfg.moe_vram_strategy_devices)
 
     def test_gptaq_config_none_serialization(self):
         cfg = QuantizeConfig()

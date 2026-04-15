@@ -10,15 +10,14 @@ from ...adapter.adapter import Adapter, Lora
 from ...models._const import DEVICE, PLATFORM
 from ...nn_modules.qlinear import AWQuantLinear
 from ...quantization import FORMAT, METHOD
-from ...quantization.awq.utils.module import try_import
+from ...utils.awq import (
+    awq_fast_gemm_forward_prefill,
+    awq_fast_gemv_forward_decode,
+    awq_runtime_available,
+    awq_runtime_error,
+)
 from ...utils.backend import BACKEND
 from ...utils.gemv import calculate_zeros_width
-from ...utils.logger import setup_logger
-
-
-log = setup_logger()
-
-awq_v2_ext, msg = try_import("gptqmodel_awq_v2_kernels")
 
 
 def pack_intweight(unpacked_qweight, interleave, kstride):
@@ -63,8 +62,8 @@ def pack_intweight(unpacked_qweight, interleave, kstride):
     return qweight
 
 
-class AwqGEMVFastQuantLinear(AWQuantLinear):
-    SUPPORTS_BACKENDS = [BACKEND.GEMV_FAST]
+class AwqGEMVFastLinear(AWQuantLinear):
+    SUPPORTS_BACKENDS = [BACKEND.AWQ_GEMV_FAST]
     SUPPORTS_METHODS = [METHOD.AWQ]
     SUPPORTS_FORMATS = {FORMAT.GEMV_FAST: 30}
     SUPPORTS_BITS = [4]
@@ -103,7 +102,7 @@ class AwqGEMVFastQuantLinear(AWQuantLinear):
             register_buffers: bool = False,
             **kwargs,
     ):
-        backend = kwargs.pop("backend", BACKEND.GEMV_FAST)
+        backend = kwargs.pop("backend", BACKEND.AWQ_GEMV_FAST)
         super().__init__(
             bits=bits,
             group_size=group_size,
@@ -155,8 +154,8 @@ class AwqGEMVFastQuantLinear(AWQuantLinear):
                 self.bias = None
 
     def forward(self, x: torch.Tensor):
-        if awq_v2_ext is None:
-            raise ModuleNotFoundError("External AWQ V2 kernels are not properly installed. Error: " + msg)
+        if not awq_runtime_available():
+            raise ModuleNotFoundError("AWQ torch.ops kernels are not properly installed. Error: " + awq_runtime_error())
 
         inputs = x
         inputs_dim = inputs.dim()
@@ -170,11 +169,15 @@ class AwqGEMVFastQuantLinear(AWQuantLinear):
 
         input_dtype = inputs.dtype
         if input_dtype != torch.float16:
-            inputs = inputs.half()
+            inputs = inputs.to(dtype=torch.float16)
+        if not inputs.is_contiguous():
+            inputs = inputs.contiguous()
 
-        zeros = getattr(self, self.zeros_name)
+        self._ensure_runtime_buffers(device=inputs.device, dtype=inputs.dtype)
+
+        zeros = self._runtime_zeros()
         if inputs_dim == 3 and batch_size < 8 and n_tokens == 1:
-            out = awq_v2_ext.gemv_forward_cuda_decode(
+            out = awq_fast_gemv_forward_decode(
                 inputs,
                 self.qweight,
                 self.scales,
@@ -185,7 +188,7 @@ class AwqGEMVFastQuantLinear(AWQuantLinear):
                 self.group_size,
             )
         else:
-            out = awq_v2_ext.gemm_forward_cuda_prefill(
+            out = awq_fast_gemm_forward_prefill(
                 inputs, self.qweight, self.scales, zeros
             )
 
@@ -198,6 +201,35 @@ class AwqGEMVFastQuantLinear(AWQuantLinear):
             out = self.adapter.apply(x=x, out=out)
 
         return out
+
+    def _ensure_runtime_buffers(self, *, device: torch.device, dtype: torch.dtype):
+        if self.qweight.device != device or not self.qweight.is_contiguous():
+            self.qweight = self.qweight.to(device=device).contiguous()
+
+        zeros = self._runtime_zeros()
+        if zeros.device != device or zeros.dtype != dtype or not zeros.is_contiguous():
+            zeros = zeros.to(device=device, dtype=dtype).contiguous()
+            if self.zeros_name == "qzeros":
+                self.qzeros = zeros
+            elif self.zeros_name == "scaled_zeros":
+                self.scaled_zeros = zeros
+            else:
+                raise ValueError(f"Unsupported zeros buffer: {self.zeros_name}")
+
+        if self.scales.device != device or self.scales.dtype != dtype or not self.scales.is_contiguous():
+            self.scales = self.scales.to(device=device, dtype=dtype).contiguous()
+
+        if self.bias is not None and (
+            self.bias.device != device or self.bias.dtype != dtype or not self.bias.is_contiguous()
+        ):
+            self.bias = self.bias.to(device=device, dtype=dtype).contiguous()
+
+    def _runtime_zeros(self) -> torch.Tensor:
+        if self.zeros_name == "qzeros":
+            return self.qzeros
+        if self.zeros_name == "scaled_zeros":
+            return self.scaled_zeros
+        raise ValueError(f"Unsupported zeros buffer: {self.zeros_name}")
 
     def pack(self, linear: nn.Module, scales: torch.Tensor, zeros: torch.Tensor, g_idx: torch.Tensor = None):
         # need scales and zeros info for real quantization
@@ -254,8 +286,8 @@ class AwqGEMVFastQuantLinear(AWQuantLinear):
         )
 
 
-class LLMAwqQuantLinear(AwqGEMVFastQuantLinear):
-    SUPPORTS_BACKENDS = [BACKEND.GEMV_FAST]
+class LLMAwqLinear(AwqGEMVFastLinear):
+    SUPPORTS_BACKENDS = [BACKEND.AWQ_GEMV_FAST]
     SUPPORTS_METHODS = [METHOD.AWQ]
     SUPPORTS_FORMATS = {FORMAT.LLM_AWQ: 100}
     SUPPORTS_BITS = [4]
@@ -281,4 +313,4 @@ class LLMAwqQuantLinear(AwqGEMVFastQuantLinear):
     zeros_name = "scaled_zeros"
 
 
-__all__ = ["AwqGEMVFastQuantLinear", "LLMAwqQuantLinear"]
+__all__ = ["AwqGEMVFastLinear", "LLMAwqLinear"]

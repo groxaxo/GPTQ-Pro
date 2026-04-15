@@ -10,8 +10,12 @@ class _DummyModel:
         self.support_batch_quantize = False
         self.quantize_config = types.SimpleNamespace(
             device=torch.device("cpu"),
-            vram_strategy="exclusive",
+            dense_vram_strategy="exclusive",
+            dense_vram_strategy_devices=None,
+            moe_vram_strategy="exclusive",
+            moe_vram_strategy_devices=None,
             compute_device_filter=compute_device_filter,
+            calibration_data_device="balanced",
             auto_forward_data_parallel=True,
             moe_routing_bypass=lambda: False,
         )

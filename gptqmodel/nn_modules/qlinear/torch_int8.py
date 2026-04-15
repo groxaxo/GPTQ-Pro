@@ -13,7 +13,7 @@ from transformers import PreTrainedModel
 
 from ...adapter.adapter import Adapter, Lora
 from ...models._const import DEVICE, PLATFORM
-from ...nn_modules.qlinear import BaseQuantLinear
+from ...nn_modules.qlinear import BaseQuantLinear, GPTQQuantLinear
 from ...quantization import FORMAT, METHOD
 from ...utils.backend import BACKEND
 
@@ -84,8 +84,8 @@ class Int8PackedModule(torch.nn.Module):
         return torch.ops.aten._weight_int8pack_mm(x, self.int8_weight_nk, self.int8_channel_scale)
 
 
-class TorchInt8QuantLinear(BaseQuantLinear):
-    SUPPORTS_BACKENDS = [BACKEND.TORCH_INT8]
+class TorchInt8Linear(GPTQQuantLinear):
+    SUPPORTS_BACKENDS = [BACKEND.GPTQ_TORCH_INT8]
     SUPPORTS_METHODS = [METHOD.GPTQ]
     # Keep auto-selection unchanged; this kernel is enabled via explicit backend selection.
     SUPPORTS_FORMATS = {FORMAT.GPTQ: 0, FORMAT.GPTQ_V2: 0}
@@ -134,7 +134,7 @@ class TorchInt8QuantLinear(BaseQuantLinear):
             out_features=out_features,
             bias=bias,
             pack_dtype=pack_dtype,
-            backend=kwargs.pop("backend", BACKEND.TORCH_INT8),
+            backend=kwargs.pop("backend", BACKEND.GPTQ_TORCH_INT8),
             adapter=adapter,
             register_buffers=register_buffers,
             **kwargs,
@@ -180,7 +180,7 @@ class TorchInt8QuantLinear(BaseQuantLinear):
             return
 
         if self.bits not in [2, 4, 8]:
-            raise NotImplementedError("TorchInt8QuantLinear unpack only supports bits in [2, 4, 8].")
+            raise NotImplementedError("TorchInt8Linear unpack only supports bits in [2, 4, 8].")
 
         wf = torch.tensor(list(range(0, self.pack_dtype_bits, self.bits)), dtype=torch.int32).unsqueeze(0)
         device = self.qweight.device
@@ -208,10 +208,10 @@ class TorchInt8QuantLinear(BaseQuantLinear):
             return dequantized
 
         if num_itr != 1:
-            raise NotImplementedError("TorchInt8QuantLinear dequantize_weight only supports num_itr == 1.")
+            raise NotImplementedError("TorchInt8Linear dequantize_weight only supports num_itr == 1.")
 
         if not self._has_all_gptq_buffers():
-            raise RuntimeError("TorchInt8QuantLinear missing GPTQ buffers for dequantization.")
+            raise RuntimeError("TorchInt8Linear missing GPTQ buffers for dequantization.")
 
         self._ensure_unpack_buffers()
 
@@ -243,7 +243,7 @@ class TorchInt8QuantLinear(BaseQuantLinear):
         workers: int = 1,
     ):
         raise NotImplementedError(
-            "TorchInt8QuantLinear is not packable. Load GPTQ int4 tensors and let post_init() convert to int8."
+            "TorchInt8Linear is not packable. Load GPTQ int4 tensors and let post_init() convert to int8."
         )
 
     def pack(
@@ -256,7 +256,7 @@ class TorchInt8QuantLinear(BaseQuantLinear):
         workers: int = 1,
     ):
         raise NotImplementedError(
-            "TorchInt8QuantLinear is not packable. Load GPTQ int4 tensors and let post_init() convert to int8."
+            "TorchInt8Linear is not packable. Load GPTQ int4 tensors and let post_init() convert to int8."
         )
 
     def transform_cpu(self, dtype: torch.dtype):
@@ -266,14 +266,14 @@ class TorchInt8QuantLinear(BaseQuantLinear):
 
     def transform(self, dtype: torch.dtype, device: str):
         if device != "cpu":
-            raise NotImplementedError("TorchInt8QuantLinear only supports CPU.")
+            raise NotImplementedError("TorchInt8Linear only supports CPU.")
         self.transform_cpu(dtype)
 
     def forward(self, x: torch.Tensor):
         if self.training:
-            raise NotImplementedError("TorchInt8QuantLinear does not support training mode.")
+            raise NotImplementedError("TorchInt8Linear does not support training mode.")
         if self.int8_module is None:
-            raise RuntimeError("TorchInt8QuantLinear int8 module is not initialized. Ensure post_init() has been called.")
+            raise RuntimeError("TorchInt8Linear int8 module is not initialized. Ensure post_init() has been called.")
 
         # Common decode path is 2D [M, K]. Skip reshape/out-shape overhead on this hot path.
         if x.dim() == 2:
@@ -299,9 +299,9 @@ class TorchInt8QuantLinear(BaseQuantLinear):
     @torch.no_grad
     def _fused_op_forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.device.type != "cpu":
-            raise NotImplementedError("TorchInt8QuantLinear fused path is CPU-only.")
+            raise NotImplementedError("TorchInt8Linear fused path is CPU-only.")
         if self.int8_module is None:
-            raise RuntimeError("TorchInt8QuantLinear int8 module is not initialized.")
+            raise RuntimeError("TorchInt8Linear int8 module is not initialized.")
         return self.int8_module(x.contiguous())
 
     def _empty_gptq_only_weights(self):
@@ -310,16 +310,16 @@ class TorchInt8QuantLinear(BaseQuantLinear):
 
 
 def dequantize_model(model: PreTrainedModel):
-    from .torch_int8_awq import TorchInt8AwqQuantLinear
+    from .torch_int8_awq import TorchInt8AwqLinear
 
-    supported_int8_qlinears = (TorchInt8QuantLinear, TorchInt8AwqQuantLinear)
+    supported_int8_qlinears = (TorchInt8Linear, TorchInt8AwqLinear)
 
     for name, module in model.named_modules():
         if isinstance(module, BaseQuantLinear) and not isinstance(module, supported_int8_qlinears):
             raise ValueError(
-                "Only models loaded using TorchInt8QuantLinear or TorchInt8AwqQuantLinear are supported "
-                "for dequantization. Please load model using backend=BACKEND.TORCH_INT8 or "
-                "backend=BACKEND.TORCH_INT8_AWQ"
+                "Only models loaded using TorchInt8Linear or TorchInt8AwqLinear are supported "
+                "for dequantization. Please load model using backend=BACKEND.GPTQ_TORCH_INT8 or "
+                "backend=BACKEND.AWQ_TORCH_INT8"
             )
 
         if isinstance(module, supported_int8_qlinears):
@@ -345,7 +345,7 @@ __all__ = [
     "INT8_SCALE_BUFFER_NAME",
     "INT8_WEIGHT_BUFFER_NAME",
     "Int8PackedModule",
-    "TorchInt8QuantLinear",
+    "TorchInt8Linear",
     "_cached_int8_dequantize",
     "_has_int8_mm_op",
     "_requantize_to_int8",

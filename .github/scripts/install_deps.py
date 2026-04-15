@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -6,9 +7,12 @@ from pathlib import Path
 import yaml
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
+_PKG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+")
+
 
 def resolve_test_path(raw_name: str) -> Path:
     return Path("tests") / f"{raw_name}.py"
+
 
 def normalize_pkg_spec(s: str) -> str:
     s = (s or "").strip()
@@ -25,6 +29,32 @@ def normalize_pkg_spec(s: str) -> str:
         return "git+" + s
 
     return s
+
+
+def pkg_key(spec: str) -> str:
+    spec = normalize_pkg_spec(spec)
+    if not spec:
+        return spec
+
+    if spec.startswith("git+"):
+        repo = spec.rsplit("/", 1)[-1]
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        return repo.split("@", 1)[0].lower().replace("_", "-")
+
+    if "://" in spec:
+        return spec
+
+    spec = spec.split(";", 1)[0].strip()
+    if " @" in spec:
+        spec = spec.split(" @", 1)[0].strip()
+
+    match = _PKG_NAME_RE.match(spec)
+    if not match:
+        return spec.lower()
+
+    return match.group(0).lower().replace("_", "-")
+
 
 def collect_pkgs(test_path: Path, deps: dict):
     specific_pkgs = set()
@@ -49,15 +79,17 @@ def collect_pkgs(test_path: Path, deps: dict):
         else:
             pass
 
-    return specific_pkgs, common_pkgs
+    specific_pkg_keys = {pkg_key(pkg) for pkg in specific_pkgs}
+    common_pkgs = {pkg for pkg in common_pkgs if pkg_key(pkg) not in specific_pkg_keys}
 
+    return specific_pkgs, common_pkgs
 
 
 def pip_install(pkgs):
     if not pkgs:
         return
 
-    print("Installing deps:")
+    print("--- Installing deps:")
     for p in pkgs:
         print("  -", p)
 
@@ -79,12 +111,13 @@ def uv_install(pkgs):
 
     pkgs = [normalize_pkg_spec(p) for p in pkgs]
 
-    print("Installing deps with uv:")
+    print("--- Installing deps with uv:")
     for p in pkgs:
         print("  -", p)
 
     for p in pkgs:
         cmd = ["uv", "pip", "install", "--no-cache", p]
+        print("installing: ", cmd)
         try:
             subprocess.check_call(cmd, shell=False)
         except Exception as e:
@@ -100,6 +133,6 @@ if __name__ == "__main__":
 
     specific_pkgs, common_pkgs = collect_pkgs(test_path, deps)
 
-    uv_install(sorted(specific_pkgs))
+    uv_install(specific_pkgs)
 
-    uv_install(sorted(common_pkgs))
+    uv_install(common_pkgs)

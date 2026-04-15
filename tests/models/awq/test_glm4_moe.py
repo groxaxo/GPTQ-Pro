@@ -6,7 +6,6 @@
 from model_test import ModelTest
 
 from gptqmodel.quantization import FORMAT, METHOD
-from gptqmodel.utils.eval import EVAL
 
 
 class TestGlm4Moe(ModelTest):
@@ -17,17 +16,18 @@ class TestGlm4Moe(ModelTest):
     DELETE_QUANTIZED_MODEL = False
     DATASET_SIZE = 512
     GROUP_SIZE = 32
-    EVAL_TASKS = {
-        EVAL.LM_EVAL.ARC_CHALLENGE: {
+    EVAL_TASKS_SLOW = {
+        "arc_challenge": {
             "acc": {"value": 0.5026, "floor_pct": 0.04},
             "acc_norm": {"value": 0.5171, "floor_pct": 0.04},
         },
-        EVAL.LM_EVAL.MMLU_STEM: {
+        "mmlu_stem": {
             "acc": {"value": 0.6362, "floor_pct": 0.04},
         },
     }
+    EVAL_TASKS_FAST = ModelTest.derive_fast_eval_tasks(EVAL_TASKS_SLOW)
     def test_glm4moe(self):
-        self.quant_lm_eval()
+        self.quantize_and_evaluate()
 
 
 class TestGlm4_5_Air(ModelTest):
@@ -38,15 +38,16 @@ class TestGlm4_5_Air(ModelTest):
     DELETE_QUANTIZED_MODEL = False
     DATASET_SIZE = 512
     GROUP_SIZE = 32
-    EVAL_TASKS = {
-        EVAL.LM_EVAL.ARC_CHALLENGE: {
+    EVAL_TASKS_SLOW = {
+        "arc_challenge": {
             "acc": {"value": 0.5247, "floor_pct": 0.04},
             "acc_norm": {"value": 0.5614, "floor_pct": 0.04},
         },
-        EVAL.LM_EVAL.MMLU_STEM: {
+        "mmlu_stem": {
             "acc": {"value": 0.6403, "floor_pct": 0.04},
         },
     }
+    EVAL_TASKS_FAST = ModelTest.derive_fast_eval_tasks(EVAL_TASKS_SLOW)
 
     def test_glm4moe(self):
-        self.quant_lm_eval()
+        self.quantize_and_evaluate()

@@ -15,46 +15,76 @@ if TESTS_MODELS_ROOT not in sys.path:
 
 from model_test import ModelTest
 
-from gptqmodel import BACKEND
 from gptqmodel.quantization import FORMAT, METHOD
-from gptqmodel.utils.eval import EVAL
 
 
-# | Metric                         |   MARLIN |
+# | Metric                         | AWQ GEMM |
 # |--------------------------------|----------|
-# | arc_challenge :: acc,none      |   0.3166 |
-# | arc_challenge :: acc_norm,none |   0.3464 |
-# | mmlu_stem :: acc,none          |   0.3692 |
-# | gsm8k_plat :: exact,flexible   |   0.2994 |
+# | arc_challenge :: acc,none      |   0.3140 |
+# | arc_challenge :: acc_norm,none |   0.3541 |
+# | mmlu_stem :: acc,none          |   0.3841 |
+# | gsm8k_plat :: exact,flexible   |   0.3499 |
 class TestLlama3_2_awq(ModelTest):
     NATIVE_MODEL_ID = "/monster/data/model/Llama-3.2-1B-Instruct" # "meta-llama/Llama-3.2-1B-Instruct"
     EVAL_BATCH_SIZE = 64
     DATASET_CONCAT_SIZE = 2048 # new
     # STOP_AFTER_LAYER = 0
-    EVAL_TASKS = {
-        EVAL.LM_EVAL.GSM8K_PLATINUM_COT: {
+    EVAL_TASKS_SLOW = {
+        "gsm8k_platinum_cot": {
             "chat_template": True,
-            "exact_match,flexible-extract": {
-                "value": 0.2440,
+            "acc,num": {
+                "value": 0.34987593052109184,
                 "floor_pct": 0.04,
             },
         },
-        EVAL.LM_EVAL.ARC_CHALLENGE: {
+        "arc_challenge": {
             "chat_template": True,
             "acc": {
-                "value": 0.3166,
+                "value": 0.31399317406143346,
                 "floor_pct": 0.04,
             },
             "acc_norm": {
-                "value": 0.3464,
+                "value": 0.35409556313993173,
                 "floor_pct": 0.04,
             },
         },
-        EVAL.LM_EVAL.MMLU_STEM: {
+        "mmlu_stem": {
             "chat_template": False,
             "acc": {
-                "value": 0.3692,
+                "value": 0.3840786552489692,
                 "floor_pct": 0.04,
+            },
+        },
+    }
+    # Fast-mode regression scores captured on CUDA_VISIBLE_DEVICES=6 (RTX 4090).
+    EVAL_TASKS_FAST = {
+        "gsm8k_platinum_cot": {
+            "chat_template": True,
+            "acc,num": {
+                "value": 0.4532671629445823,
+                "floor_pct": 0.04,
+                "ceil_pct": 1.0,
+            },
+        },
+        "arc_challenge": {
+            "chat_template": True,
+            "acc": {
+                "value": 0.31313993174061433,
+                "floor_pct": 0.04,
+                "ceil_pct": 1.0,
+            },
+            "acc_norm": {
+                "value": 0.35665529010238906,
+                "floor_pct": 0.04,
+                "ceil_pct": 1.0,
+            },
+        },
+        "mmlu_stem": {
+            "chat_template": False,
+            "acc": {
+                "value": 0.3910561370123692,
+                "floor_pct": 0.04,
+                "ceil_pct": 1.0,
             },
         },
     }
@@ -62,7 +92,6 @@ class TestLlama3_2_awq(ModelTest):
     METHOD = METHOD.AWQ
     SYM = True
     TORCH_DTYPE = torch.float16
-    LOAD_BACKEND = BACKEND.TORCH_AWQ
 
     def test_llama3_2_awq(self):
-        self.quant_lm_eval()
+        self.quantize_and_evaluate()

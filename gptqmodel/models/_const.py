@@ -83,7 +83,7 @@ def validate_cuda_support(raise_exception: bool = False):
         if not at_least_one_cuda_v6:
             if raise_exception:
                 raise EnvironmentError(
-                    "GPTQModel cuda requires Pascal or later gpu with compute capability >= `6.0`.")
+                    "GPT-QModel cuda requires Pascal or later gpu with compute capability >= `6.0`.")
             else:
                 got_cuda = False
 
@@ -127,7 +127,5 @@ def get_best_device(backend: BACKEND = BACKEND.AUTO) -> torch.device:
         return MPS
     else:
         return CPU
-
-EXLLAMA_DEFAULT_MAX_INPUT_LENGTH = 2048
 
 EXPERT_INDEX_PLACEHOLDER = "{expert_index}"

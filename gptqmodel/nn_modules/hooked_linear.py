@@ -9,6 +9,7 @@ import torch
 import transformers
 from torch import nn
 
+from ..utils.device_telemetry import emit_device_telemetry
 from ..utils.logger import setup_logger
 
 
@@ -220,6 +221,7 @@ class HookedLinear(torch.nn.Linear):
 
         self.forward_hook = None
         self.forward_hook_last = False
+        self.module_name = None
 
     @staticmethod
     def from_linear(linear: torch.nn.Linear):
@@ -232,6 +234,13 @@ class HookedLinear(torch.nn.Linear):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         original_device = input.device
         target_device = self.weight.data.device
+        module_name = getattr(self, "module_name", None) or getattr(self, "full_name", None) or getattr(self, "name", None) or "unknown"
+        emit_device_telemetry(
+            "hooked_linear_forward",
+            module=module_name,
+            weight_device=target_device,
+            input_device=original_device,
+        )
         if original_device != target_device:
             input = input.to(device=target_device)
         output = super().forward(input)
@@ -250,7 +259,8 @@ def _replace_module(module, child, name, level: int = 0, debug: bool = False) ->
     if debug:
         log.info(f"{level_indent} Hook: {instance_type.__name__}: {name}")
 
-    if isinstance(child, torch.nn.Linear):
+    # Replace nn.Linear with HookedLinear, except PhimoeTopKRouter which returns a tuple in forward()
+    if isinstance(child, torch.nn.Linear) and child.__class__.__name__ != "PhimoeTopKRouter":
         setattr(module, name, HookedLinear.from_linear(child))
     elif isinstance(child, transformers.Conv1D):
         setattr(module, name, HookedTransformerConv1D.from_conv1d(child))

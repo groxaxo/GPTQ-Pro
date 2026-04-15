@@ -32,8 +32,73 @@ except Exception:  # pragma: no cover - optional dependency
 
 log = setup_logger()
 
-class TorchQuantLinear(PackableQuantLinear):
-    SUPPORTS_BACKENDS = [BACKEND.TORCH]
+
+class _LinearWeightMetadata:
+    """Tensor-like metadata shim for integrations that only inspect `weight` attrs."""
+
+    def __init__(self, module: "TorchLinear", transposed: bool = False):
+        self._module = module
+        self._transposed = transposed
+
+    def _shape(self) -> torch.Size:
+        shape = (self._module.out_features, self._module.in_features)
+        if self._transposed:
+            shape = (shape[1], shape[0])
+        return torch.Size(shape)
+
+    def _first_tensor(self) -> torch.Tensor | None:
+        for name in ("qweight", "scales", "bias", "qzeros", "g_idx"):
+            tensor = getattr(self._module, name, None)
+            if tensor is not None:
+                return tensor
+        return None
+
+    @property
+    def device(self) -> torch.device:
+        tensor = self._first_tensor()
+        return tensor.device if tensor is not None else torch.device("cpu")
+
+    @property
+    def dtype(self) -> torch.dtype:
+        for name in ("bias", "scales", "qweight"):
+            tensor = getattr(self._module, name, None)
+            if tensor is not None:
+                return tensor.dtype
+        return torch.float16
+
+    @property
+    def is_cuda(self) -> bool:
+        return self.device.type == "cuda"
+
+    @property
+    def ndim(self) -> int:
+        return 2
+
+    @property
+    def shape(self) -> torch.Size:
+        return self._shape()
+
+    @property
+    def requires_grad(self) -> bool:
+        return False
+
+    @property
+    def T(self) -> "_LinearWeightMetadata":
+        return _LinearWeightMetadata(self._module, transposed=not self._transposed)
+
+    def size(self, dim: int | None = None):
+        shape = self._shape()
+        return shape if dim is None else shape[dim]
+
+    def __repr__(self) -> str:
+        return (
+            f"_LinearWeightMetadata(device={self.device}, dtype={self.dtype}, "
+            f"shape={tuple(self.shape)})"
+        )
+
+
+class TorchLinear(PackableQuantLinear):
+    SUPPORTS_BACKENDS = [BACKEND.GPTQ_TORCH]
     SUPPORTS_METHODS = [METHOD.GPTQ]
     SUPPORTS_FORMATS = {FORMAT.GPTQ: 20, FORMAT.GPTQ_V2: 20}
     SUPPORTS_BITS = [2, 3, 4, 8]
@@ -81,7 +146,7 @@ class TorchQuantLinear(PackableQuantLinear):
             out_features=out_features,
             bias=bias,
             pack_dtype=pack_dtype,
-            backend=kwargs.pop("backend", BACKEND.TORCH),
+            backend=kwargs.pop("backend", BACKEND.GPTQ_TORCH),
             adapter=adapter,
             register_buffers=register_buffers,
             enable_wf_unsqueeze=kwargs.pop("enable_wf_unsqueeze", True),
@@ -111,6 +176,7 @@ class TorchQuantLinear(PackableQuantLinear):
         self._prefetched_weights = {}
         self._prefetch_events = {}
         self._prefetch_streams = {}
+        self._weight_metadata = _LinearWeightMetadata(self)
 
         # if self.group_size != self.in_features:
         #     self.padded_infeatures = self.in_features + (-self.in_features % self.group_size)
@@ -135,6 +201,10 @@ class TorchQuantLinear(PackableQuantLinear):
         self._stream_reset_cache()
         self.clear_weight_cache()
         self._reset_prefetch_state()
+
+    @property
+    def weight(self):
+        return self._weight_metadata
 
     def dequantize_weight(self, num_itr: int = 1):
         # Triton dequant currently handles the common single-iteration layout.
@@ -230,13 +300,21 @@ class TorchQuantLinear(PackableQuantLinear):
 
     def _forward_eager(self, x: torch.Tensor, out_shape):
         num_itr = self.g_idx.shape[0] // x.shape[-1]
-        weights = self._consume_prefetched_weights(x.dtype)
+        weights = self._consume_prefetched_weights(x.dtype, device=x.device)
         if weights is None:
-            weights = self.dequantize_weight(num_itr=num_itr).to(x.dtype)
+            weights = self.dequantize_weight(num_itr=num_itr)
+        if weights.device != x.device or weights.dtype != x.dtype:
+            # Quantized modules can be staged on a different accelerator than the
+            # caller tensor during multi-device kernel validation; matmul still
+            # needs both operands on the same device and dtype.
+            weights = weights.to(device=x.device, dtype=x.dtype)
         self._update_cached_weights(weights)
         out = torch.matmul(x, weights).reshape(out_shape)
         if self.bias is not None:
-            out.add_(self.bias)
+            bias = self.bias
+            if bias.device != out.device or bias.dtype != out.dtype:
+                bias = bias.to(device=out.device, dtype=out.dtype)
+            out.add_(bias)
 
         if self.adapter:
             out = self.adapter.apply(x=x, out=out)
@@ -320,13 +398,15 @@ class TorchQuantLinear(PackableQuantLinear):
             return
         self._cached_weights[weights.dtype] = weights.detach()
 
-    def _consume_prefetched_weights(self, dtype: torch.dtype):
+    def _consume_prefetched_weights(self, dtype: torch.dtype, device: torch.device = None):
         if not self._lookahead_enabled or self.training:
             return None
         tensor = self._prefetched_weights.pop(dtype, None)
         if tensor is None:
             return None
         event = self._prefetch_events.pop(dtype, None)
+        if device is not None and tensor.device != device:
+            return None
         if event is not None and HAS_CUDA and tensor.device.type == "cuda":
             torch.cuda.current_stream(device=tensor.device).wait_event(event)
         return tensor
@@ -473,13 +553,13 @@ class TorchQuantLinear(PackableQuantLinear):
             self._reset_prefetch_state()
         return self
 
-    def set_lookahead_next(self, module: "TorchQuantLinear"):
+    def set_lookahead_next(self, module: "TorchLinear"):
         if module is None:
             self._lookahead_next = None
             self._reset_prefetch_state()
             return self
 
-        if isinstance(module, TorchQuantLinear):
+        if isinstance(module, TorchLinear):
             self._lookahead_next = module
             return self
 
@@ -490,12 +570,12 @@ class TorchQuantLinear(PackableQuantLinear):
                 self._reset_prefetch_state()
                 return self
             for target in targets:
-                if not isinstance(target, TorchQuantLinear):
-                    raise TypeError("lookahead targets must be TorchQuantLinear modules or None")
+                if not isinstance(target, TorchLinear):
+                    raise TypeError("lookahead targets must be TorchLinear modules or None")
             self._lookahead_next = targets
             return self
 
-        raise TypeError("lookahead target must be TorchQuantLinear, iterable of TorchQuantLinear, or None")
+        raise TypeError("lookahead target must be TorchLinear, iterable of TorchLinear, or None")
 
     def _reset_prefetch_state(self):
         for event in self._prefetch_events.values():
@@ -619,13 +699,13 @@ class TorchQuantLinear(PackableQuantLinear):
 
 def dequantize_model(model: PreTrainedModel):
     for name, module in model.named_modules():
-        if isinstance(module, BaseQuantLinear) and not isinstance(module, TorchQuantLinear):
+        if isinstance(module, BaseQuantLinear) and not isinstance(module, TorchLinear):
             raise ValueError(
-                "Only models loaded using TorchQuantLinear are supported for dequantization. "
-                "Please load model using backend=BACKEND.TORCH."
+                "Only models loaded using TorchLinear are supported for dequantization. "
+                "Please load model using backend=BACKEND.GPTQ_TORCH."
             )
 
-        if isinstance(module, TorchQuantLinear):
+        if isinstance(module, TorchLinear):
             # Create a new Linear layer with dequantized weights
             new_module = nn.Linear(module.in_features, module.out_features)
             new_module.weight = nn.Parameter(module.dequantize_weight().T.detach().to("cpu", torch.float16))
@@ -645,4 +725,4 @@ def dequantize_model(model: PreTrainedModel):
     return model
 
 
-__all__ = ["TorchQuantLinear", "dequantize_model"]
+__all__ = ["TorchLinear", "dequantize_model"]

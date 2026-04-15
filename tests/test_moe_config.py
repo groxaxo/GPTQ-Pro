@@ -11,7 +11,7 @@ from torch import nn
 
 from gptqmodel import GPTQModel
 from gptqmodel.models.writer import QUANT_LOG_NSAMPLES
-from gptqmodel.nn_modules.qlinear.marlin import MarlinQuantLinear
+from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
 from gptqmodel.quantization.config import (
     ExpertsRoutingBypass,
     ExpertsRoutingOverride,
@@ -32,8 +32,6 @@ EXPERTS = [
     'model.layers.0.mlp.experts.39',
     'model.layers.0.mlp.experts.51',
     'model.layers.0.mlp.experts.55',
-    'model.layers.0.mlp.experts.90',
-    'model.layers.0.mlp.experts.91',
 ]
 
 # Standard MoE MLP projections per expert
@@ -82,14 +80,14 @@ class TestMoEConfig(ModelTest):
     - structural integrity of MoE experts after quantization
     """
 
-    FAILSAFE = None
+    FALLBACK = None
 
     # Intentionally minimal to force observable MoE routing behavior
     DATASET_SIZE = 1
 
     NATIVE_MODEL_ID = "/monster/data/model/Qwen3-30B-A3B-layers-1"
-    VRAM_STRATEGY = VramStrategy.BALANCED
-    SAVE_PATH = "Qwen3-30B-A3B-layers-1-gptq"
+    DENSE_VRAM_STRATEGY = VramStrategy.EXCLUSIVE
+    MOE_VRAM_STRATEGY = VramStrategy.BALANCED
 
     calibration_dataset = None
     calibration_dataset_token_size = None
@@ -101,7 +99,7 @@ class TestMoEConfig(ModelTest):
 
     def quantize_and_assert(self):
         # Apply GPTQ quantization with optional MoE routing configuration
-        quant_config = QuantizeConfig(bits=4, group_size=128, moe=self.MOE_CONFIG, failsafe=self.FAILSAFE)
+        quant_config = QuantizeConfig(bits=4, group_size=128, moe=self.MOE_CONFIG, fallback=None)
         model = GPTQModel.load(self.NATIVE_MODEL_ID, quant_config)
 
         # Compute total calibration token size
@@ -152,7 +150,7 @@ class TestMoEConfig(ModelTest):
             torch.cuda.empty_cache()
 
             quantized_model = GPTQModel.load(tmp_dir, device_map="auto")
-            target_cls = MarlinQuantLinear if self.MOE_CONFIG else nn.Linear
+            target_cls = MarlinLinear if self.MOE_CONFIG else nn.Linear
             assert_results(quantized_model, target_cls, self.MOE_CONFIG)
 
     def test_none_moe_config(self):

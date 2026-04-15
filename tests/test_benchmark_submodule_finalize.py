@@ -15,9 +15,8 @@ import torch
 from gptqmodel.looper import gptq_processor as gptq_processor_module
 from gptqmodel.looper.gptq_processor import GPTQProcessor
 from gptqmodel.looper.named_module import NamedModule
-from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear
+from gptqmodel.nn_modules.qlinear.torch import TorchLinear
 from gptqmodel.quantization.config import QuantizeConfig
-from gptqmodel.utils.pause_resume import PauseResumeController
 from gptqmodel.utils.threadx import DeviceThreadPool
 
 
@@ -153,7 +152,6 @@ def test_submodule_finalize_timing():
         require_fwd=False,
         calculate_w_wq_diff=False,
     )
-    processor._pause_controller = PauseResumeController()
     processor.pb = _DummyProgressBar()
 
     processor.preprocess(named_module)
@@ -169,7 +167,7 @@ def test_submodule_finalize_timing():
     quant_model = SimpleNamespace(
         model=base_model,
         quantize_config=qcfg,
-        qlinear_kernel=TorchQuantLinear,
+        qlinear_kernel=TorchLinear,
         lm_head="lm_head",
         quant_region_timer=timer,
         quantized=False,
@@ -260,7 +258,7 @@ def test_submodule_finalize_timing():
     assert "q_scales" not in named_module.state
     assert "q_zeros" not in named_module.state
     assert "q_g_idx" not in named_module.state
-    assert isinstance(quant_model.model.linear, TorchQuantLinear)
+    assert isinstance(quant_model.model.linear, TorchLinear)
 
     create_time = sum(duration for label, duration in events if label == "create_quant_module")
     pack_time = sum(duration for label, duration in events if label.startswith("pack_module"))
@@ -307,7 +305,7 @@ def _prepare_modules(processor, qcfg, device, module_count):
         named_module.target_device = device
         named_module.module.target_device = device
 
-        processor.preprocess(named_module, failsafe=None)
+        processor.preprocess(named_module, fallback=None)
         processor.process(named_module)
 
         base_model.to("cpu")
@@ -318,7 +316,7 @@ def _prepare_modules(processor, qcfg, device, module_count):
         quant_model = SimpleNamespace(
             model=base_model,
             quantize_config=qcfg,
-            qlinear_kernel=TorchQuantLinear,
+            qlinear_kernel=TorchLinear,
             lm_head="lm_head",
             quant_region_timer=_DummyTimer(),
             quantized=False,
@@ -367,7 +365,6 @@ def test_submodule_finalize_threadpool_serialization(cpu_workers):
         require_fwd=False,
         calculate_w_wq_diff=False,
     )
-    processor._pause_controller = PauseResumeController()
     processor.pb = _DummyProgressBar()
 
     module_count = min(cpu_workers * 2, 32)

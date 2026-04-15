@@ -9,7 +9,7 @@ import tempfile
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
-from gptqmodel.nn_modules.qlinear.marlin import MarlinQuantLinear
+from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
 from gptqmodel.utils.torch import torch_empty_cache
 
 
@@ -31,6 +31,7 @@ from torch import nn
 from gptqmodel import GPTQModel, QuantizeConfig  # noqa: E402
 from gptqmodel.looper.module_looper import ModuleLooper, StopMainLoop
 from gptqmodel.models import loader
+from gptqmodel.models.auto import _hide_unsupported_quantization_config_for_eval, _is_supported_quantization_config
 
 
 ############ test_model_dequant.py ############
@@ -44,8 +45,21 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from gptqmodel.quantization.dtype import dequantize_f8_e4m3
+from gptqmodel.quantization.dtype import (
+    available_float8_dtype_names,
+    dequantize_f4_e2m1,
+    dequantize_fp8,
+)
 from gptqmodel.utils.model_dequant import dequantize_model
+
+
+try:
+    from torchao.prototype.mx_formats.nvfp4_tensor import nvfp4_quantize
+except Exception:
+    nvfp4_quantize = None
+
+
+pytestmark = [pytest.mark.model, pytest.mark.slow, pytest.mark.gpu]
 
 
 def pack_cols(values: torch.Tensor, bits: int = 4) -> torch.Tensor:
@@ -74,9 +88,22 @@ def write_index(path: Path, shard: str, keys: list[str]) -> None:
     payload = {"weight_map": weight_map}
     (path / "model.safetensors.index.json").write_text(json.dumps(payload))
 
+def _checkpoint_roundtrip_fp8_formats() -> list[str]:
+    formats = []
+    for format_name in available_float8_dtype_names():
+        dtype = getattr(torch, format_name)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "probe.safetensors"
+            try:
+                save_file({"probe.weight": torch.zeros((2, 2), dtype=dtype)}, str(path))
+            except Exception:
+                continue
+        formats.append(format_name)
+    return formats
 
-@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="float8 dtype not available")
-def test_dequantize_model_fp8_infers_block_size(tmp_path):
+
+@pytest.mark.parametrize("format_name", _checkpoint_roundtrip_fp8_formats())
+def test_dequantize_model_fp8_infers_block_size(tmp_path, format_name: str):
     model_dir = tmp_path / "fp8_model_infer"
     output_dir = tmp_path / "fp8_output_infer"
     model_dir.mkdir()
@@ -84,13 +111,13 @@ def test_dequantize_model_fp8_infers_block_size(tmp_path):
     config = {
         "architectures": ["TestModel"],
         "quantization_config": {
-            "fmt": "float8_e4m3fn",
+            "format": format_name,
             "quant_method": "fp8",
         },
     }
     (model_dir / "config.json").write_text(json.dumps(config))
 
-    weight = torch.randn(4, 8, dtype=torch.float32).to(torch.float8_e4m3fn)
+    weight = torch.randn(4, 8, dtype=torch.float32).to(getattr(torch, format_name))
     scale_inv = torch.ones(2, 2, dtype=torch.float32)
     shard_name = "model.safetensors"
     save_file(
@@ -108,12 +135,12 @@ def test_dequantize_model_fp8_infers_block_size(tmp_path):
         weight_out = reader.get_tensor("linear.weight")
         assert weight_out.dtype is torch.bfloat16
 
-    expected = dequantize_f8_e4m3(weight, scale_inv=scale_inv, axis=None, target_dtype=torch.bfloat16)
+    expected = dequantize_fp8(weight, scale_inv=scale_inv, axis=None, target_dtype=torch.bfloat16)
     assert torch.equal(weight_out, expected)
 
 
-@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="float8 dtype not available")
-def test_dequantize_model_fp8(tmp_path):
+@pytest.mark.parametrize("format_name", _checkpoint_roundtrip_fp8_formats())
+def test_dequantize_model_fp8(tmp_path, format_name: str):
     model_dir = tmp_path / "fp8_model"
     output_dir = tmp_path / "fp8_output"
     model_dir.mkdir()
@@ -121,14 +148,14 @@ def test_dequantize_model_fp8(tmp_path):
     config = {
         "architectures": ["TestModel"],
         "quantization_config": {
-            "fmt": "float8_e4m3fn",
+            "format": format_name,
             "quant_method": "fp8",
             "weight_block_size": [2, 4],
         },
     }
     (model_dir / "config.json").write_text(json.dumps(config))
 
-    weight = torch.randn(2, 4, dtype=torch.float32).to(torch.float8_e4m3fn)
+    weight = torch.randn(2, 4, dtype=torch.float32).to(getattr(torch, format_name))
     scale_inv = torch.ones(1, 1, dtype=torch.float32)
     shard_name = "model.safetensors"
     save_file(
@@ -149,17 +176,61 @@ def test_dequantize_model_fp8(tmp_path):
         weight_out = reader.get_tensor("linear.weight")
         bias_out = reader.get_tensor("linear.bias")
 
-    expected = dequantize_f8_e4m3(weight, scale_inv=scale_inv, axis=None, target_dtype=torch.bfloat16)
+    expected = dequantize_fp8(weight, scale_inv=scale_inv, axis=None, target_dtype=torch.bfloat16)
     assert torch.equal(weight_out, expected)
     assert bias_out.dtype is torch.bfloat16
 
     updated_config = json.loads((output_dir / "config.json").read_text())
     assert "quantization_config" not in updated_config
-    assert updated_config.get("torch_dtype") == "bfloat16"
+    assert updated_config.get("dtype") == "bfloat16"
+    assert "torch_dtype" not in updated_config
 
     new_index = json.loads((output_dir / "model.safetensors.index.json").read_text())
     assert "linear.weight" in new_index["weight_map"]
     assert "linear.weight_scale_inv" not in new_index["weight_map"]
+
+
+@pytest.mark.skipif(nvfp4_quantize is None, reason="torchao NVFP4 support required")
+@pytest.mark.skipif(not hasattr(torch, "float4_e2m1fn_x2"), reason="float4 packed dtype not available")
+def test_dequantize_model_nvfp4_float4_storage(tmp_path):
+    model_dir = tmp_path / "nvfp4_model"
+    output_dir = tmp_path / "nvfp4_output"
+    model_dir.mkdir()
+
+    config = {
+        "architectures": ["TestModel"],
+        "quantization_config": {
+            "format": "nvfp4",
+        },
+    }
+    (model_dir / "config.json").write_text(json.dumps(config))
+
+    data = torch.randn(4, 16, dtype=torch.float32)
+    scales, packed = nvfp4_quantize(data, block_size=16)
+    packed_float4 = packed.view(torch.float4_e2m1fn_x2)
+    shard_name = "model.safetensors"
+    save_file(
+        {
+            "linear.weight": packed_float4,
+            "linear.weight_scale": scales,
+        },
+        str(model_dir / shard_name),
+    )
+    write_index(model_dir, shard_name, ["linear.weight", "linear.weight_scale"])
+
+    dequantize_model(model_dir, output_dir, target_dtype=torch.bfloat16, device="cpu")
+
+    with safe_open(output_dir / shard_name, framework="pt", device="cpu") as reader:
+        assert "linear.weight" in reader.keys()
+        assert "linear.weight_scale" not in reader.keys()
+        weight_out = reader.get_tensor("linear.weight")
+
+    expected = dequantize_f4_e2m1(packed_float4, scale=scales, axis=None, target_dtype=torch.bfloat16)
+    assert torch.allclose(weight_out, expected, atol=1e-3, rtol=1e-3)
+
+    new_index = json.loads((output_dir / "model.safetensors.index.json").read_text())
+    assert "linear.weight" in new_index["weight_map"]
+    assert "linear.weight_scale" not in new_index["weight_map"]
 
 
 def test_dequantize_model_awq(tmp_path):
@@ -432,7 +503,7 @@ class TestModelSave(unittest.TestCase):
 
     def test_moe(self):
         quantize_config = QuantizeConfig(
-            failsafe=None,
+            fallback=None,
         )
 
         model = GPTQModel.load(
@@ -452,9 +523,9 @@ class TestModelSave(unittest.TestCase):
             new_model = GPTQModel.load(tmp_dir_name, device="cuda")
             print("new_model", new_model)
 
-            self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[2].gate_proj, MarlinQuantLinear)
-            self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[2].up_proj, MarlinQuantLinear)
-            self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[2].down_proj, MarlinQuantLinear)
+            self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[2].gate_proj, MarlinLinear)
+            self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[2].up_proj, MarlinLinear)
+            self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[2].down_proj, MarlinLinear)
 
             # No calibration data was routed to these MoE expert modules.
             self.assertIsInstance(new_model.model.model.layers[0].mlp.experts[10].gate_proj, nn.Linear)
@@ -589,3 +660,64 @@ def test_emit_layer_complete_stops_cleanly_on_stop_main_loop(monkeypatch):
     )
 
     assert looper._check_loop_stop() is True
+
+
+def test_hide_unsupported_quantization_config_for_eval_temporarily_clears_gguf_bits():
+    quantization_config = {
+        "quant_method": "gguf",
+        "format": "gguf",
+        "bits": "q4_k_m",
+    }
+    model = types.SimpleNamespace(
+        config=types.SimpleNamespace(quantization_config=dict(quantization_config))
+    )
+
+    with _hide_unsupported_quantization_config_for_eval(model):
+        assert model.config.quantization_config is None
+
+    assert model.config.quantization_config == quantization_config
+
+
+def test_hide_unsupported_quantization_config_for_eval_leaves_supported_gptq_alone():
+    quantization_config = {
+        "quant_method": "gptq",
+        "bits": 4,
+        "group_size": 128,
+    }
+    model = types.SimpleNamespace(
+        config=types.SimpleNamespace(quantization_config=dict(quantization_config))
+    )
+
+    with _hide_unsupported_quantization_config_for_eval(model):
+        assert model.config.quantization_config == quantization_config
+
+    assert model.config.quantization_config == quantization_config
+
+
+def test_is_supported_quantization_config_rejects_input_activation_quantization():
+    config = types.SimpleNamespace(
+        quantization_config={
+            "quant_method": "modelopt",
+            "config_groups": {
+                "group_0": {
+                    "input_activations": {"num_bits": 4, "type": "float", "dynamic": False},
+                    "weights": {"num_bits": 4, "type": "float", "dynamic": False},
+                }
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="activation quantized models"):
+        _is_supported_quantization_config(config)
+
+
+def test_is_supported_quantization_config_rejects_kv_cache_quantization():
+    config = types.SimpleNamespace(
+        quantization_config={
+            "quant_method": "modelopt",
+            "kv_cache_scheme": {"num_bits": 8, "type": "float", "dynamic": False},
+        }
+    )
+
+    with pytest.raises(ValueError, match="activation quantized models"):
+        _is_supported_quantization_config(config)

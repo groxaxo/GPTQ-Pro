@@ -16,13 +16,13 @@ from ...utils.backend import BACKEND
 from ...utils.logger import setup_logger
 from ...utils.machete import (
     _validate_machete_device_support,
-    gptqmodel_machete_kernels,
-    machete_import_exception,
     machete_mm,
     machete_prepack_B,
+    machete_runtime_available,
+    machete_runtime_error,
     pack_quantized_values_into_int32,
 )
-from ...utils.marlin import replace_parameter, unpack_cols
+from ...utils.marlin import replace_parameter, replace_tensor, unpack_cols
 from ...utils.marlin_scalar_type import scalar_types
 from ...utils.rocm import IS_ROCM
 
@@ -30,8 +30,50 @@ from ...utils.rocm import IS_ROCM
 log = setup_logger()
 
 
-class AwqMacheteQuantLinear(AWQuantLinear):
-    SUPPORTS_BACKENDS = [BACKEND.MACHETE]
+def _undo_awq_interleave(values: torch.Tensor, num_bits: int) -> torch.Tensor:
+    if num_bits == 4:
+        undo_interleave = [0, 4, 1, 5, 2, 6, 3, 7]
+    elif num_bits == 8:
+        undo_interleave = [0, 2, 1, 3]
+    else:
+        raise ValueError(f"Unsupported AWQ num_bits={num_bits}")
+
+    return (
+        values.reshape(-1, len(undo_interleave))[:, undo_interleave]
+        .reshape(values.shape)
+        .contiguous()
+    )
+
+
+def _replace_registered_tensor(
+    module: torch.nn.Module,
+    name: str,
+    new_tensor: torch.Tensor,
+) -> None:
+    if name in module._parameters:
+        replace_parameter(
+            module,
+            name,
+            torch.nn.Parameter(new_tensor, requires_grad=False),
+        )
+        return
+
+    if name in module._buffers:
+        current = getattr(module, name)
+        if (
+            current.dtype == new_tensor.dtype
+            and current.untyped_storage().nbytes() == new_tensor.untyped_storage().nbytes()
+        ):
+            replace_tensor(module, name, new_tensor)
+        else:
+            module._buffers[name] = new_tensor
+        return
+
+    raise KeyError(f"{module.__class__.__name__}.{name} is not a registered tensor")
+
+
+class AwqMacheteLinear(AWQuantLinear):
+    SUPPORTS_BACKENDS = [BACKEND.AWQ_MACHETE]
     SUPPORTS_METHODS = [METHOD.AWQ]
     SUPPORTS_FORMATS = {FORMAT.GEMM: 100, FORMAT.MARLIN: 100}
     SUPPORTS_BITS = [4, 8]
@@ -73,12 +115,6 @@ class AwqMacheteQuantLinear(AWQuantLinear):
             adapter: Adapter = None,
             register_buffers: bool = False,
             **kwargs):
-        if machete_import_exception is not None:
-            raise ValueError(
-                "Trying to use the machete backend, but could not import the "
-                f"C++/CUDA dependencies with the following error: {machete_import_exception}"
-            )
-
         if bits not in self.TYPE_MAP:
             raise ValueError(f"Unsupported num_bits = {bits}. Supported: {list(self.TYPE_MAP.keys())}")
 
@@ -91,7 +127,7 @@ class AwqMacheteQuantLinear(AWQuantLinear):
             out_features=out_features,
             bias=bias,
             pack_dtype=pack_dtype,
-            backend=kwargs.pop("backend", BACKEND.MACHETE),
+            backend=kwargs.pop("backend", BACKEND.AWQ_MACHETE),
             adapter=adapter,
             register_buffers=register_buffers,
             **kwargs)
@@ -101,10 +137,9 @@ class AwqMacheteQuantLinear(AWQuantLinear):
 
     @classmethod
     def validate_once(cls) -> Tuple[bool, Optional[Exception]]:
-        if gptqmodel_machete_kernels is None:
-            return False, ImportError(machete_import_exception)
-        else:
-            return True, None
+        if not machete_runtime_available():
+            return False, ImportError(machete_runtime_error())
+        return True, None
 
     @classmethod
     def validate_device(cls, device: DEVICE):
@@ -125,6 +160,7 @@ class AwqMacheteQuantLinear(AWQuantLinear):
             self.in_features,
             self.out_features,
         ).to(device=device)
+        qweight_int = _undo_awq_interleave(qweight_int, self.bits)
 
         packed = pack_quantized_values_into_int32(
             qweight_int,
@@ -138,18 +174,10 @@ class AwqMacheteQuantLinear(AWQuantLinear):
             b_type=self.weight_type,
             group_scales_type=self.scales.dtype,
         )
-        replace_parameter(
-            self,
-            "qweight",
-            torch.nn.Parameter(prepacked.contiguous(), requires_grad=False),
-        )
+        _replace_registered_tensor(self, "qweight", prepacked.contiguous())
 
         # Ensure scales are contiguous and resident on the correct device.
-        replace_parameter(
-            self,
-            "scales",
-            torch.nn.Parameter(self.scales.contiguous(), requires_grad=False),
-        )
+        _replace_registered_tensor(self, "scales", self.scales.contiguous())
 
         # Convert zero-points: unpack columns, then pre-apply scales as expected by machete_mm
         effective_group_size = self.in_features if self.group_size == -1 else self.group_size
@@ -161,14 +189,11 @@ class AwqMacheteQuantLinear(AWQuantLinear):
             num_groups,
             self.out_features,
         ).to(device=device)
+        qzeros_unpacked = _undo_awq_interleave(qzeros_unpacked, self.bits)
 
         scales = self.scales
         qzeros_fp = (-1.0 * scales.to(dtype=scales.dtype) * qzeros_unpacked.to(scales.dtype)).contiguous()
-        replace_parameter(
-            self,
-            "qzeros",
-            torch.nn.Parameter(qzeros_fp, requires_grad=False),
-        )
+        _replace_registered_tensor(self, "qzeros", qzeros_fp)
 
         if self.bias is not None:
             self.bias = self.bias.to(device=device)
@@ -203,4 +228,4 @@ class AwqMacheteQuantLinear(AWQuantLinear):
         return result
 
 
-__all__ = ["AwqMacheteQuantLinear"]
+__all__ = ["AwqMacheteLinear"]

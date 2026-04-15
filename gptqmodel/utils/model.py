@@ -21,11 +21,10 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import accelerate
-import pcre as re
+import pcre
 import torch
 import torch.nn as nn
 import transformers
-from huggingface_hub import HfApi, hf_hub_download
 from packaging import version
 from safetensors import safe_open
 from torch.nn.modules.conv import _ConvNd
@@ -33,34 +32,47 @@ from transformers import PretrainedConfig
 from transformers.pytorch_utils import id_tensor_storage
 from transformers.utils.hub import cached_file
 
-from gptqmodel.nn_modules.qlinear.exllama_eora import ExllamaEoraQuantLinear
-from gptqmodel.nn_modules.qlinear.marlin import MarlinQuantLinear
+from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
 
 from ..adapter.adapter import Adapter
 from ..looper.named_module import NamedModule
 from ..models._const import (
     CPU,
     DEVICE,
-    EXLLAMA_DEFAULT_MAX_INPUT_LENGTH,
     EXPERT_INDEX_PLACEHOLDER,
     SUPPORTS_MODULE_TYPES,
 )
 from ..nn_modules.qlinear import BaseQuantLinear
-from ..nn_modules.qlinear.exllama import ExllamaQuantLinear
-from ..nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear
-from ..nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+from ..nn_modules.qlinear.exllamav2 import ExllamaV2Linear
+from ..nn_modules.qlinear.exllamav2_awq import AwqExllamaV2Linear
 from ..quantization import FORMAT, QuantizeConfig
-from ..quantization.config import FORMAT_FIELD_CHECKPOINT, METHOD, dynamic_get
+from ..quantization.config import (
+    FORMAT_FIELD_CODE,
+    METHOD,
+    _normalize_bitsandbytes_block_size,
+    _normalize_bitsandbytes_format,
+    _normalize_fp8_fmt,
+    _normalize_fp8_scale_semantics,
+    _normalize_fp8_weight_block_size,
+    _normalize_fp8_weight_scale_method,
+    _normalize_quant_bits,
+    dynamic_get,
+    quant_bits_width,
+    resolve_quant_format,
+)
 from . import has_gil_disabled
-from .backend import BACKEND
+from .backend import BACKEND, normalize_backend
 from .ctx import ctx
 from .device import get_device
+from .hf import get_hf_config_dtype
+from .hub import hf_hub_download, model_info
 from .importer import select_quant_linear
 from .logger import log_time_block, setup_logger
 from .torch import HAS_CUDA, torch_empty_cache
 
 
 log = setup_logger()
+_REQUIRES_VERSION_RE = pcre.compile(r"(<=|>=|==|<|>)\s*([\d\.]+)")
 
 
 _DTYPE_SAFE_MAP = {
@@ -75,6 +87,30 @@ _DTYPE_SAFE_MAP = {
     torch.uint8: ("U8", 1),
     torch.bool: ("BOOL", 1),
 }
+
+if hasattr(torch, "float8_e4m3fn"):
+    _DTYPE_SAFE_MAP[torch.float8_e4m3fn] = ("F8_E4M3", 1)
+if hasattr(torch, "float8_e5m2"):
+    _DTYPE_SAFE_MAP[torch.float8_e5m2] = ("F8_E5M2", 1)
+
+_FLOAT8_DTYPE_NAMES = tuple(
+    name
+    for name in (
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+    )
+    if hasattr(torch, name)
+)
+_FLOAT4_PACKED_DTYPE_NAMES = tuple(
+    name for name in ("float4_e2m1fn_x2",) if hasattr(torch, name)
+)
+
+# Byte-size fallbacks keep ancillary metadata math working for torch floatx
+# dtypes even when the current safetensors header schema cannot serialize them.
+_DTYPE_NUM_BYTES = dict.fromkeys((*[getattr(torch, name) for name in _FLOAT8_DTYPE_NAMES], *[getattr(torch, name) for name in _FLOAT4_PACKED_DTYPE_NAMES]), 1)
 
 
 _DTYPE_STR_MAP = {
@@ -96,6 +132,24 @@ _DTYPE_STR_MAP = {
     "bool": torch.bool,
 }
 
+for name in _FLOAT8_DTYPE_NAMES:
+    dtype = getattr(torch, name)
+    _DTYPE_STR_MAP[name] = dtype
+    _DTYPE_STR_MAP[f"f8_{name.removeprefix('float8_')}"] = dtype
+
+if hasattr(torch, "float8_e4m3fn"):
+    _DTYPE_STR_MAP["f8_e4m3"] = torch.float8_e4m3fn
+if hasattr(torch, "float8_e5m2"):
+    _DTYPE_STR_MAP["f8_e5m2"] = torch.float8_e5m2
+if hasattr(torch, "float8_e8m0fnu"):
+    _DTYPE_STR_MAP["float8_e8m0"] = torch.float8_e8m0fnu
+    _DTYPE_STR_MAP["f8_e8m0"] = torch.float8_e8m0fnu
+
+for name in _FLOAT4_PACKED_DTYPE_NAMES:
+    dtype = getattr(torch, name)
+    _DTYPE_STR_MAP[name] = dtype
+    _DTYPE_STR_MAP[f"f4_{name.removeprefix('float4_')}"] = dtype
+
 MoETopKState = List[Tuple[nn.Module, str, int]]
 
 MOE_TOPK_FIELD_NAMES = [
@@ -110,9 +164,11 @@ MOE_NUM_EXPERTS_FIELD_NAMES = [
 
 
 def _torch_dtype_num_bytes(dtype: torch.dtype) -> int:
-    if dtype not in _DTYPE_SAFE_MAP:
-        raise NotImplementedError(f"Unsupported dtype for safetensors export: {dtype}")
-    return _DTYPE_SAFE_MAP[dtype][1]
+    if dtype in _DTYPE_SAFE_MAP:
+        return _DTYPE_SAFE_MAP[dtype][1]
+    if dtype in _DTYPE_NUM_BYTES:
+        return _DTYPE_NUM_BYTES[dtype]
+    raise NotImplementedError(f"Unsupported dtype for safetensors export: {dtype}")
 
 
 def _torch_dtype_to_safetensors(dtype: torch.dtype) -> str:
@@ -179,7 +235,30 @@ def recurse_setattr(module, name, value):
         recurse_setattr(getattr(module, name), rest, value)
 
 
+def _module_has_meta_tensors(module: nn.Module) -> bool:
+    for param in module.parameters(recurse=True):
+        if getattr(param, "is_meta", False) or param.device.type == "meta":
+            return True
+    for buf in module.buffers(recurse=True):
+        if getattr(buf, "is_meta", False) or buf.device.type == "meta":
+            return True
+    return False
+
+
 def move_to(obj: torch.Tensor | nn.Module, device: torch.device, dtype: torch.dtype = None):
+    if isinstance(obj, nn.Module) and _module_has_meta_tensors(obj):
+        if not accelerate.utils.has_offloaded_params(obj):
+            raise NotImplementedError(
+                "Cannot move a module that still contains meta tensors without offload hooks. "
+                "Materialize it first before calling move_to()."
+            )
+
+        # Accelerate disk-offloaded modules keep meta placeholders until they are
+        # explicitly restored, so materialize those leaves before the device move.
+        from .offload import undo_offload_to_disk
+
+        return undo_offload_to_disk(obj, device=device, dtype=dtype)
+
     if get_device(obj) != device or dtype is not None:
         obj = obj.to(device=device, dtype=dtype, non_blocking=False)
 
@@ -252,20 +331,28 @@ def make_quant(
     pack: bool = False,
     device: DEVICE = None,
     from_quantized: bool = False,
+    dtype: Optional[torch.dtype] = None,
 ) -> Type[BaseQuantLinear]:
 
-    bits = qcfg.bits
+    bits = qcfg.runtime_bits
     group_size =qcfg.group_size
     extension = qcfg.adapter
-    format = qcfg.format
+    format = resolve_quant_format(qcfg.format, qcfg.method)
     desc_act = qcfg.desc_act
     sym = qcfg.sym
     dynamic = qcfg.dynamic
     pack_dtype = qcfg.pack_dtype
+    init_kwargs = qcfg.quant_linear_init_kwargs()
 
-    # Bitblas needs to be loaded as gptq's quant linear first, and then converted to bitblas format.
-    if not pack and format in (FORMAT.GPTQ, FORMAT.GPTQ_V2) and backend == BACKEND.BITBLAS:
-        backend = BACKEND.TORCH
+    export_quant_method = qcfg.export_quant_method()
+    backend = normalize_backend(backend, quant_method=export_quant_method)
+
+    # BitBLAS-native checkpoints can load directly. Other formats need a compatible preload kernel first.
+    if not pack and backend in [BACKEND.GPTQ_BITBLAS, BACKEND.AWQ_BITBLAS]:
+        if format in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
+            backend = BACKEND.GPTQ_TORCH
+        elif qcfg.quant_method == METHOD.AWQ and format == FORMAT.GEMM:
+            backend = BACKEND.AWQ_TORCH
 
     # returns multiple validated kernels
     quant_linear_candidates = select_quant_linear(
@@ -275,11 +362,12 @@ def make_quant(
         sym=sym,
         backend=backend,
         format=format,
-        quant_method=qcfg.quant_method,
+        quant_method=export_quant_method,
         pack=pack,
         dynamic=dynamic,
         device=device,
         pack_dtype=pack_dtype,
+        dtype=dtype,
         multi_select=True,
         adapter=extension,
     )
@@ -308,6 +396,9 @@ def make_quant(
                 pack_dtype=pack_dtype,
                 backend=backend,
                 adapter=qcfg.adapter,
+                format=format,
+                init_kwargs=init_kwargs,
+                dtype=dtype,
             )
             log.info(f"Kernel: selected -> `{linear_cls.__name__}`.")
             return linear_cls
@@ -323,7 +414,7 @@ def make_quant(
 def create_quant_module(
     name: str,
     linear_cls: Type[BaseQuantLinear],
-    bits: int,
+    bits,
     desc_act: bool,
     dynamic,
     group_size: int,
@@ -333,9 +424,12 @@ def create_quant_module(
     device: DEVICE,
     lm_head_name: str,
     pack_dtype: torch.dtype,
+    format: FORMAT = FORMAT.GPTQ,
     backend: BACKEND = BACKEND.AUTO,
     register_buffers: bool = True,
     adapter: Optional[Adapter] = None,
+    init_kwargs: Optional[Dict[str, Any]] = None,
+    dtype: Optional[torch.dtype] = None,
 
 ):
     # unwrap named module
@@ -379,11 +473,12 @@ def create_quant_module(
     bias = submodule.bias is not None
 
     # need copies as dynamic config may override these in for loop
-    tmp_bits = bits
+    tmp_bits = _normalize_quant_bits(bits, format_value=format)
     tmp_group_size = group_size
     tmp_desc_act = desc_act
     tmp_sym = sym
     tmp_pack_dtype = pack_dtype
+    tmp_init_kwargs = dict(init_kwargs or {})
 
     # dynamic bits, group_size, sym, pack_dtype for each layer/module
     if dynamic is not None:
@@ -395,30 +490,73 @@ def create_quant_module(
         # positive module match
         if overrides:
             # override base QuantizeConfig for every quant config key/value
-            tmp_bits = overrides.get("bits", bits)
+            tmp_bits = _normalize_quant_bits(overrides.get("bits", bits), format_value=format)
             tmp_group_size = overrides.get("group_size", group_size)
             tmp_desc_act = overrides.get("desc_act", desc_act)
             tmp_sym = overrides.get("sym", sym)
             tmp_pack_dtype = overrides.get("pack_dtype", pack_dtype)
 
-    # when loading a quantized model, device is target device passed in GPTQModel.load()
+            if format == FORMAT.FP8:
+                fp8_format_override = overrides.get(FORMAT_FIELD_CODE, overrides.get("fmt"))
+                if fp8_format_override is not None:
+                    tmp_init_kwargs["format"] = _normalize_fp8_fmt(fp8_format_override)
+                block_size_override = overrides.get(
+                    "weight_block_size",
+                    tmp_init_kwargs.get("weight_block_size"),
+                )
+                normalized_block_size = _normalize_fp8_weight_block_size(block_size_override)
+                if "weight_scale_method" in overrides or block_size_override is not None:
+                    tmp_init_kwargs["weight_scale_method"] = _normalize_fp8_weight_scale_method(
+                        overrides.get(
+                            "weight_scale_method",
+                            tmp_init_kwargs.get("weight_scale_method"),
+                        ),
+                        weight_block_size=normalized_block_size,
+                    )
+                if "weight_scale_semantics" in overrides:
+                    tmp_init_kwargs["weight_scale_semantics"] = _normalize_fp8_scale_semantics(
+                        overrides["weight_scale_semantics"]
+                    )
+                if "weight_block_size" in overrides:
+                    tmp_init_kwargs["weight_block_size"] = normalized_block_size
+            elif format == FORMAT.BITSANDBYTES:
+                raw_format = overrides.get(FORMAT_FIELD_CODE, overrides.get("bnb_quant_type"))
+                if raw_format is not None:
+                    tmp_init_kwargs["format"] = _normalize_bitsandbytes_format(
+                        raw_format,
+                        bits=quant_bits_width(tmp_bits),
+                    )
+                if "block_size" in overrides or "bnb_block_size" in overrides:
+                    tmp_init_kwargs["block_size"] = _normalize_bitsandbytes_block_size(
+                        overrides.get("block_size", overrides.get("bnb_block_size"))
+                    )
+                if "compress_statistics" in overrides or "bnb_compress_statistics" in overrides:
+                    tmp_init_kwargs["compress_statistics"] = bool(
+                        overrides.get("compress_statistics", overrides.get("bnb_compress_statistics"))
+                    )
+
+    validate_bits = quant_bits_width(tmp_bits)
+    constructor_bits = tmp_bits if getattr(linear_cls, "QUANT_TYPE", None) == "gguf" else validate_bits
+
+    # when loading a quantized model, device is the target passed through the GPT-QModel load path
     # check in_features and out_features validate
     _, err = linear_cls.validate(
-        bits=tmp_bits,
+        bits=validate_bits,
         group_size=tmp_group_size,
         desc_act=tmp_desc_act,
         sym=tmp_sym,
         pack_dtype=tmp_pack_dtype,
+        dtype=dtype,
         in_features=in_features,
         out_features=out_features,
-        device=device,
+        device=DEVICE(device) if isinstance(device, str) else device,
         adapter=adapter, # TODO FIX ME..need to pass Eora if loaded
     )
     if err is not None:
         raise err
 
     new_layer = linear_cls(
-        bits=tmp_bits,
+        bits=constructor_bits,
         group_size=tmp_group_size,
         desc_act=tmp_desc_act,
         sym=tmp_sym,
@@ -426,19 +564,21 @@ def create_quant_module(
         out_features=out_features,
         pack_dtype=tmp_pack_dtype,
         bias=bias,
+        dtype=dtype,
         #weight_dtype=submodule.qweight.dtype if isinstance(submodule, BaseQuantLinear) else submodule.weight.dtype,
         name=name,
         lm_head_name=lm_head_name,
         backend=backend,
         register_buffers=register_buffers,
         adapter=adapter,
+        **tmp_init_kwargs,
     )
     new_layer.device = ori_layer_device
     recurse_setattr(module, name, new_layer.to(ori_layer_device))
 
 def create_quant_layer(
         linear_cls: Type[BaseQuantLinear],
-        bits: int,
+        bits,
         desc_act: bool,
         dynamic,
         group_size: int,
@@ -450,6 +590,9 @@ def create_quant_layer(
         pack_dtype: torch.dtype,
         backend: BACKEND,
         adapter: Optional[Adapter] = None,
+        format: FORMAT = FORMAT.GPTQ,
+        init_kwargs: Optional[Dict[str, Any]] = None,
+        dtype: Optional[torch.dtype] = None,
 
 ) -> Type[BaseQuantLinear]:
     if isinstance(module, linear_cls):
@@ -472,8 +615,11 @@ def create_quant_layer(
             device=device,
             lm_head_name=lm_head_name,
             pack_dtype=pack_dtype,
+            format=format,
             backend=backend,
             adapter=adapter,
+            init_kwargs=init_kwargs,
+            dtype=dtype,
         )
 
     return linear_cls
@@ -488,7 +634,7 @@ def hf_convert_gptq_v1_to_v2_format(
 ) -> Tuple[nn.Module, bool]:
     if checkpoint_format == "gptq":
         # skip v1 to v2 conversion for kernels that can only operate on sym=True (gptq_v1)
-        if qlinear_kernel in [MarlinQuantLinear, ExllamaEoraQuantLinear]:
+        if qlinear_kernel is MarlinLinear:
             return model, False
 
         cfg = QuantizeConfig(bits=bits)
@@ -588,7 +734,7 @@ def convert_gptq_v1_to_v2_format(
     qlinear_kernel: Type[BaseQuantLinear],
 ):
     # skip v2 to v1 conversion for gptq_v1 kernels
-    if cfg.quant_method in [METHOD.GPTQ] and not qlinear_kernel.REQUIRES_FORMAT_V2:
+    if cfg.export_quant_method() == METHOD.GPTQ and not qlinear_kernel.REQUIRES_FORMAT_V2:
         log.info(
             f"Format: Skipped v1 to v2 conversion due to Kernel  `{qlinear_kernel}`.")
         return model
@@ -597,7 +743,7 @@ def convert_gptq_v1_to_v2_format(
     # with tctl.threadpool_limits(limits=1):
     time.time()
     log.info(
-        f"Format: Converting `{FORMAT_FIELD_CHECKPOINT}` from `{FORMAT.GPTQ}` to internal `{FORMAT.GPTQ_V2}`.")
+        f"Format: Converting `{FORMAT_FIELD_CODE}` from `{FORMAT.GPTQ}` to internal `{FORMAT.GPTQ_V2}`.")
 
     for _, submodule in model.named_modules():
         # v1 checkpoint format used to do `qzeros = qzeros -= 1` before serialization, thus the
@@ -665,7 +811,7 @@ def convert_gptq_v2_to_v1_format(
 ):
 
     # skip v2 to v1 conversion for gptq_v1 kernels
-    if quantize_config.quant_method in [METHOD.GPTQ] and not qlinear_kernel.REQUIRES_FORMAT_V2:
+    if quantize_config.export_quant_method() == METHOD.GPTQ and not qlinear_kernel.REQUIRES_FORMAT_V2:
         return model
 
     # Limit thread usage to avoid auto-parallizataion regression
@@ -819,8 +965,8 @@ def pack_module(
 
         if (
             quantize_config is not None
-            and quantize_config.quant_method == METHOD.GPTQ
-            and quantize_config.format == FORMAT.GPTQ
+            and quantize_config.export_quant_method() == METHOD.GPTQ
+            and resolve_quant_format(quantize_config.format, quantize_config.method) == FORMAT.GPTQ
             and getattr(quant_linear_cls, "REQUIRES_FORMAT_V2", False)
         ):
             with log_time_block(
@@ -975,24 +1121,18 @@ def hf_gptqmodel_post_init(model, use_act_order: bool, quantize_config: Quantize
 def gptqmodel_post_init(model, use_act_order: bool, quantize_config: QuantizeConfig = None,
                         max_input_length: Optional[int] = None):
     """
-    The max_input_length argument is specific to the exllama backend, that requires to initialize a buffer temp_state.
+    Initialize model-persistent backend scratch buffers after quantized weights are loaded.
     """
-    # post init for bitblas backend.
-    device_to_buffers_size = {}
-    # exllama
-    model_uses_exllama = False
-
-    # exllamav2
     fixed_bytes = {}
     model_uses_exllamav2 = False
 
     for name, submodule in model.named_modules():
-        if isinstance(submodule, ExllamaV2QuantLinear):
+        if isinstance(submodule, ExllamaV2Linear):
             model_uses_exllamav2 = True
             device = submodule.qweight.device
             scratch_fixed = submodule.scratch_space_fixed()
             fixed_bytes[device] = max(scratch_fixed, fixed_bytes.get(device, 0))
-        elif isinstance(submodule, AwqExllamaV2QuantLinear):
+        elif isinstance(submodule, AwqExllamaV2Linear):
             model_uses_exllamav2 = True
             device = submodule.qweight.device
             scratch_fixed = submodule.scratch_space_fixed(
@@ -1000,86 +1140,6 @@ def gptqmodel_post_init(model, use_act_order: bool, quantize_config: QuantizeCon
                 max_batch_size=int(os.getenv("AWQ_BATCH_SIZE", 1))
             )
             fixed_bytes[device] = max(scratch_fixed, fixed_bytes.get(device, 0))
-        elif isinstance(submodule, ExllamaQuantLinear):
-            model_uses_exllama = True
-            device = submodule.qweight.device
-            if device not in device_to_buffers_size:
-                device_to_buffers_size[device] = {
-                    "max_dq_buffer_size": 1,
-                    "max_inner_outer_dim": 1,
-                }
-            submodule._use_act_order = True if use_act_order else False
-
-            # Disable this heuristic for detecting act_order, but it could be used instead of the config.
-            """
-            if submodule.g_idx is None:
-                submodule.act_order = False
-            elif submodule.g_idx is not None and ((submodule.g_idx == 0).all() or torch.equal(submodule.g_idx.cpu(), torch.tensor([i // submodule.group_size for i in range(submodule.g_idx.shape[0])], dtype=torch.int32))):
-                submodule.g_idx = None
-                submodule.act_order = False
-            else:
-                submodule.act_order = True
-            """
-
-            device_to_buffers_size[device]["max_dq_buffer_size"] = max(
-                device_to_buffers_size[device]["max_dq_buffer_size"],
-                submodule.qweight.numel() * 8,
-                )
-
-            if use_act_order:
-                device_to_buffers_size[device]["max_inner_outer_dim"] = max(
-                    device_to_buffers_size[device]["max_inner_outer_dim"],
-                    submodule.in_features,
-                    submodule.out_features,
-                )
-
-    if model_uses_exllama:
-        # To be honest this is quite ugly, not proud of this.
-        from gptqmodel_exllama_kernels import prepare_buffers, set_tuning_params
-
-        device_to_buffers = {}
-
-        if use_act_order:
-            if max_input_length is None:
-                max_input_len = EXLLAMA_DEFAULT_MAX_INPUT_LENGTH
-            else:
-                max_input_len = max_input_length
-        else:
-            if max_input_length is not None:
-                log.info(
-                    "Using exllama backend without act-order, the parameter max_input_length was set although not needed, it will be ignored."
-                )
-            max_input_len = 1
-
-        for device, buffers_size in device_to_buffers_size.items():
-            # The temp_state buffer is required to reorder X in the act-order case.
-            # The temp_dq buffer is required to dequantize weights when using cuBLAS, typically for the prefill.
-            device_to_buffers[device] = {
-                "temp_state": torch.zeros(
-                    (max_input_len, buffers_size["max_inner_outer_dim"]),
-                    dtype=torch.float16,
-                    device=device,
-                ),
-                "temp_dq": torch.zeros(
-                    (1, buffers_size["max_dq_buffer_size"]),
-                    dtype=torch.float16,
-                    device=device,
-                ),
-                "max_dq_buffer_size": buffers_size["max_dq_buffer_size"],
-                "max_inner_outer_dim": buffers_size["max_inner_outer_dim"],
-            }
-
-        # Buffers need to be persistent to avoid any bug.
-        model.device_to_buffers = device_to_buffers
-
-        for device, buffers in model.device_to_buffers.items():
-            prepare_buffers(device, buffers["temp_state"], buffers["temp_dq"])
-
-        # Using the default from exllama repo here.
-        matmul_recons_thd = 16
-        matmul_fused_remap = False
-        matmul_no_half2 = False
-        set_tuning_params(matmul_recons_thd, matmul_fused_remap, matmul_no_half2)
 
     if model_uses_exllamav2:
         from ..utils.exllamav2 import ScratchSpace
@@ -1094,16 +1154,13 @@ def gptqmodel_post_init(model, use_act_order: bool, quantize_config: QuantizeCon
 
     # The buffers need to have been initialized first before calling make_q4.
     for _, submodule in model.named_modules():
-        if isinstance(submodule, (ExllamaV2QuantLinear, AwqExllamaV2QuantLinear)):
+        if isinstance(submodule, (ExllamaV2Linear, AwqExllamaV2Linear)):
             device = submodule.qweight.device
             submodule.post_init(scratch_space=model.device_tensors[device])
         elif isinstance(submodule, BaseQuantLinear):
             submodule.post_init()
 
     torch_empty_cache()
-
-    # if use_act_order and max_input_length and isinstance(submodule, ExllamaQuantLinear):
-    #     model = exllama_set_max_input_length(model, max_input_length)
 
     return model
 
@@ -1198,8 +1255,9 @@ def auto_dtype(config: PretrainedConfig,
         return torch.bfloat16
 
     # Update: latest kernel accuracies have shown, with multiple ranges of shapes
-    # There are no accuracy issues with bf16 vs fp16. The only kernel with severe
-    # regression in bf16 is MARLIN_FP16 (reduce math in fp16) which is not auto-selectable
+    # There are no accuracy issues with bf16 vs fp16. The Marlin reduce-accumulation
+    # path can use fp16, but it is disabled by default via
+    # GPTQMODEL_MARLIN_USE_FP32=True.
     # # for inference, always use FP16 for max accuracy
     # # check test_kernel_outputs for validation between fp16 and b16 in terms of kernel accuracy
     # if quant_inference:
@@ -1207,7 +1265,7 @@ def auto_dtype(config: PretrainedConfig,
     #     return torch.float16
 
     # get dtype from config
-    dtype = getattr(config, "dtype") if hasattr(config, "dtype") else getattr(config, "torch_dtype")
+    dtype = get_hf_config_dtype(config)
     if dtype and not isinstance(dtype, torch.dtype):
         raise ValueError(f"dtype in config must be a torch.dtype, but got {dtype}")
 
@@ -1261,12 +1319,15 @@ def copy_py_files(save_dir, file_extension=".py", model_id_or_path=""):
         for file in py_files:
             shutil.copy2(os.path.join(model_id_or_path, file), save_dir)
     else:
-        api = HfApi()
-        model_info = api.model_info(model_id_or_path)
-        for file in model_info.siblings:
+        remote_model_info = model_info(model_id_or_path)
+        for file in remote_model_info.siblings:
             if file.rfilename.endswith(file_extension):
-                _ = hf_hub_download(repo_id=model_id_or_path, filename=file.rfilename,
-                                                  local_dir=save_dir)
+                _ = hf_hub_download(
+                    repo_id=model_id_or_path,
+                    filename=file.rfilename,
+                    local_dir=save_dir,
+                )
+
 
 def get_model_files_size(pre_quantized_model_path, file_extension=['.bin', '.safetensors', '.pth', '.pt', '.ckpt', '.h5', '.pb', '.onnx']):
     if os.path.isdir(pre_quantized_model_path):
@@ -1277,15 +1338,12 @@ def get_model_files_size(pre_quantized_model_path, file_extension=['.bin', '.saf
                 1] in file_extension
         )
     else:
-        api = HfApi()
-        files_data = api.list_repo_files(pre_quantized_model_path)
-        pre_quantized_size_bytes = 0
-        for file_info in files_data:
-            if any(file_info.endswith(ext) for ext in file_extension):
-                file_metadata = api.model_info(pre_quantized_model_path, files_metadata=True)
-                for file_data in file_metadata.siblings:
-                    if file_data.rfilename == file_info:
-                        pre_quantized_size_bytes += file_data.size
+        remote_model_info = model_info(pre_quantized_model_path, files_metadata=True)
+        pre_quantized_size_bytes = sum(
+            (file_data.size or 0)
+            for file_data in remote_model_info.siblings
+            if any(file_data.rfilename.endswith(ext) for ext in file_extension)
+        )
     pre_quantized_size_mb = pre_quantized_size_bytes / (1024 * 1024)
     return pre_quantized_size_mb
 
@@ -1297,7 +1355,7 @@ def check_requires_version(requires_version, current_version):
         "<": operator.lt,
         ">": operator.gt,
     }
-    match = re.match(r"(<=|>=|==|<|>)\s*([\d\.]+)", requires_version)
+    match = _REQUIRES_VERSION_RE.match(requires_version)
     if match:
         op_symbol, required_version = match.groups()
         current_version = version.parse(current_version)
@@ -1568,7 +1626,7 @@ def get_state_dict_for_save(model: nn.Module, offload_root: Optional[str] = None
         if model._tied_weights_keys is not None:
             found = 0
             for name in sorted(names):
-                matches_pattern = any(re.search(pat, name) for pat in model._tied_weights_keys)
+                matches_pattern = any(pcre.compile(pat).search(name) for pat in model._tied_weights_keys)
                 if matches_pattern and name in state_dict:
                     found += 1
                     if found < len(names):
@@ -1641,6 +1699,11 @@ def _write_shard_file(path: str, entries: List[TensorSource], metadata: Dict[str
         offset += entry.num_bytes
 
     header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    # Safetensors pads the JSON header to an 8-byte boundary.
+    # Without that padding, some readers reject the file as malformed.
+    header_padding = (-len(header_bytes)) % 8
+    if header_padding:
+        header_bytes += b" " * header_padding
 
     with open(path, "wb") as out:
         out.write(struct.pack("<Q", len(header_bytes)))

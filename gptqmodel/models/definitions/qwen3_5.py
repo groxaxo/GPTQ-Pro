@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2024-2025 qubitium@modelcloud.ai
 # SPDX-License-Identifier: Apache-2.0
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
-from transformers.models.qwen3_5 import Qwen3_5TextConfig
+from transformers import AutoModelForImageTextToText
 
 from . import LlamaQModel
 
@@ -14,12 +14,19 @@ class Qwen3_5QModel(LlamaQModel):
     non-quantized so the layer walker captures the complete structure.
     """
 
-    config_class = Qwen3_5TextConfig
+    loader = AutoModelForImageTextToText
+
+    require_load_processor = True
 
     layer_modules_strict = False
 
+    pre_lm_head_norm_module = "model.language_model.norm"
+
+    rotary_embedding = "model.language_model.rotary_emb"
+
     module_tree = [
         "model",
+        "language_model",
         "layers",
         "#",
         {
@@ -27,8 +34,11 @@ class Qwen3_5QModel(LlamaQModel):
             "self_attn": ("q_norm:!", "q_proj:0", "k_norm:!", "k_proj:0", "v_proj:0", "o_proj:1"),
             "linear_attn": (
                 "norm:!",
+                "conv1d:!",
                 "in_proj_qkv:0",
                 "in_proj_z:1",
+                "in_proj_b:!:1",
+                "in_proj_a:!:1",
                 "out_proj:2",
             ),
             "post_attention_layernorm": ("post_attention_layernorm:!",),

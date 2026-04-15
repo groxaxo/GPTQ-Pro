@@ -6,10 +6,7 @@
 
 from model_test import ModelTest
 
-from gptqmodel.utils.eval import EVAL
 
-
-# | Metric                         |   MARLIN |
 # |--------------------------------|----------|
 # | arc_challenge :: acc,none      |   0.3046 |
 # | arc_challenge :: acc_norm,none |   0.3345 |
@@ -21,22 +18,22 @@ class TestDotsOne(ModelTest):
     TRUST_REMOTE_CODE = True
     EVAL_BATCH_SIZE = 64
     DATASET_CONCAT_SIZE = 2048
-    EVAL_TASKS = {
-        EVAL.LM_EVAL.GSM8K_PLATINUM_COT: {
+    EVAL_TASKS_SLOW = {
+        "gsm8k_platinum_cot": {
             "chat_template": True,
-            "exact_match,flexible-extract": {
+            "acc,num": {
                 "value": 0.1944,
                 "floor_pct": 0.04,
             },
         },
-        EVAL.LM_EVAL.MMLU_STEM: {
+        "mmlu_stem": {
             "chat_template": False,
             "acc": {
                 "value": 0.3768, # 0.3099 4096, 0.3270 2048
                 "floor_pct": 0.04,
             },
         },
-        EVAL.LM_EVAL.ARC_CHALLENGE: {
+        "arc_challenge": {
             "chat_template": True,
             "acc": {
                 "value": 0.3046,  # 0.3294 4096, 0.3242 2048
@@ -48,6 +45,7 @@ class TestDotsOne(ModelTest):
             },
         },
     }
+    EVAL_TASKS_FAST = ModelTest.derive_fast_eval_tasks(EVAL_TASKS_SLOW)
 
     # llama 3.2 Instruct requires chat = true to have normal ARC scores
     # mmlu requires chat = false
@@ -62,4 +60,4 @@ class TestDotsOne(ModelTest):
     # b1 = 0.315, b4 = 0.3106, b8 = 0.3148, b32 = 0.3148, b16 = 0.3234
 
     def test_dots_one(self):
-        self.quant_lm_eval()
+        self.quantize_and_evaluate()

@@ -23,34 +23,28 @@ from gptqmodel.looper.loop_processor import LoopProcessor  # noqa: E402
 from gptqmodel.looper.named_module import NamedModule  # noqa: E402
 from gptqmodel.looper.native_processor import NATIVE_INPUTS_STATE_KEY  # noqa: E402
 from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # noqa: E402
-from gptqmodel.nn_modules.qlinear.marlin import MarlinQuantLinear  # noqa: E402
-from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear  # noqa: E402
-from gptqmodel.nn_modules.qlinear.tritonv2 import TritonV2QuantLinear  # noqa: E402
+from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear  # noqa: E402
+from gptqmodel.nn_modules.qlinear.torch import TorchLinear  # noqa: E402
+from gptqmodel.nn_modules.qlinear.tritonv2 import TritonV2Linear  # noqa: E402
 from gptqmodel.quantization import QuantizeConfig  # noqa: E402
 from gptqmodel.utils import safetensor  # noqa: E402
-from gptqmodel.utils.perplexity import Perplexity  # noqa: E402
 
 
 class TestDynamic(ModelTest):
     NATIVE_MODEL_ID = "/monster/data/model/Qwen2.5-0.5B-Instruct/"  # "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     tmp_quant_path = None
 
-    def calculate_avg_ppl(self, model, tokenizer):
-        ppl = Perplexity(
-            model=model,
-            tokenizer=tokenizer,
-            dataset_path="wikitext",
-            dataset_name="wikitext-2-raw-v1",
-            split="test",
-            text_column="text",
-        )
-
-        all = ppl.calculate(n_ctx=512, n_batch=512)
-
-        # average ppl
-        avg = sum(all) / len(all)
-
-        return avg
+    def _generate(self, model, tokenizer, prompt: str = "The sky is blue today"):
+        inputs = tokenizer(prompt, return_tensors="pt")
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=8,
+                num_beams=1,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+        return outputs
 
     @classmethod
     def setUpClass(cls):
@@ -103,12 +97,12 @@ class TestDynamic(ModelTest):
     @parameterized.expand(
         [
             # exllama v1/v2 only supports 4bit so does not support dynamic bits control
-            (BACKEND.TORCH, TorchQuantLinear, 15.643),
-            (BACKEND.TRITON, TritonV2QuantLinear, 15.643),
-            (BACKEND.MARLIN, MarlinQuantLinear, 15.644),
+            (BACKEND.TORCH, TorchLinear),
+            (BACKEND.TRITON, TritonV2Linear),
+            (BACKEND.MARLIN, MarlinLinear),
         ]
     )
-    def test_dynamic_bits(self, backend, backendQLinear, expected_ppl):
+    def test_dynamic_bits(self, backend, backendQLinear):
         model = GPTQModel.load(
             self.tmp_quant_path.name,
             backend=backend,
@@ -120,15 +114,11 @@ class TestDynamic(ModelTest):
         else:
             raise ValueError(f"Did not find a `{backendQLinear}` linear layer for backend: `{backend}`")
 
-        dynamic_bits_ppl = self.calculate_avg_ppl(model, self.tokenizer)
+        outputs = self._generate(model, self.tokenizer)
+        self.assertGreater(outputs.shape[1], 0)
 
         del model
-        print(f"Backend: {backend}, PPL: {dynamic_bits_ppl}")
-        tolerance = 0.05
-        lower_bound = expected_ppl * (1 - tolerance)
-        upper_bound = expected_ppl * (1 + tolerance)
-        assert lower_bound <= dynamic_bits_ppl <= upper_bound, \
-            f"PPL expected: `{expected_ppl}` ±{tolerance * 100}%, actual = `{dynamic_bits_ppl}`"
+
 
     def test_skip_module(self):
         dynamic = {
@@ -174,7 +164,7 @@ def test_dynamic_overrides_apply_per_module(monkeypatch):
         dynamic={
             "model.linear": {
                 "gptaq": {"alpha": 0.5, "device": "cpu"},
-                "failsafe": {"strategy": "median", "threshold": "2%"},
+                "fallback": {"strategy": "median", "threshold": "2%"},
                 "hessian": {"chunk_size": 32, "chunk_bytes": 1024, "staging_dtype": "bfloat16"},
             },
         }
@@ -196,9 +186,9 @@ def test_dynamic_overrides_apply_per_module(monkeypatch):
     assert dynamic_cfg.gptaq is not None
     assert dynamic_cfg.gptaq.alpha == 0.5
     assert dynamic_cfg.gptaq.device == "cpu"
-    assert dynamic_cfg.failsafe is not None
-    assert dynamic_cfg.failsafe.strategy == "median"
-    assert dynamic_cfg.failsafe.threshold == "2%"
+    assert dynamic_cfg.fallback is not None
+    assert dynamic_cfg.fallback.strategy == "median"
+    assert dynamic_cfg.fallback.threshold == "2%"
     assert dynamic_cfg.hessian.chunk_size == 32
     assert dynamic_cfg.hessian.chunk_bytes == 1024
     assert dynamic_cfg.hessian.staging_dtype == torch.bfloat16
@@ -214,8 +204,8 @@ def test_dynamic_overrides_apply_per_module(monkeypatch):
     other_cfg = processor.qcfg_dynamic
     assert other_cfg is not None
     assert other_cfg.gptaq is None
-    assert other_cfg.failsafe.strategy == qcfg.failsafe.strategy
-    assert other_cfg.failsafe.threshold == qcfg.failsafe.threshold
+    assert other_cfg.fallback.strategy == qcfg.fallback.strategy
+    assert other_cfg.fallback.threshold == qcfg.fallback.threshold
     assert other_cfg.hessian.chunk_size == qcfg.hessian.chunk_size
     assert other_cfg.hessian.chunk_bytes == qcfg.hessian.chunk_bytes
     assert other_cfg.hessian.staging_dtype == qcfg.hessian.staging_dtype

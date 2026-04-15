@@ -27,6 +27,7 @@ class Qwen2MoeQModel(BaseQModel):
             "post_attention_layernorm": ("post_attention_layernorm:!",),
             "mlp:moe:?": {
                 "gate": ("gate:!",),
+                "shared_expert_gate": ("shared_expert_gate:!",),
                 "shared_expert:0": ("gate_proj:0", "up_proj:0", "down_proj:1"),
                 "experts:0": {
                     "#": ("gate_proj:0", "up_proj:0", "down_proj:1"),
@@ -34,17 +35,3 @@ class Qwen2MoeQModel(BaseQModel):
             },
         }
     ]
-
-    # module_tree_overrides = {
-    #     METHOD.AWQ: [
-    #         {
-    #             "mlp:moe:?": {
-    #                 "gate": ("gate:!",),
-    #                 "shared_expert": None,
-    #                 "experts": {
-    #                     "#": ("gate_proj:0", "up_proj:0", "down_proj:1"),
-    #                 },
-    #             },
-    #         }
-    #     ]
-    # }

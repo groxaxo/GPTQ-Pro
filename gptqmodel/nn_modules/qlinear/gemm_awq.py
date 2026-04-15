@@ -13,12 +13,17 @@ from ...adapter.adapter import Adapter, Lora
 from ...models._const import DEVICE, PLATFORM
 from ...nn_modules.qlinear import AWQuantLinear
 from ...quantization import FORMAT, METHOD
-from ...quantization.awq.utils.module import try_import
 from ...quantization.awq.utils.utils import get_best_device
+from ...utils.awq import awq_dequantize_weights, awq_gemm_forward, awq_runtime_available, awq_runtime_error
 from ...utils.backend import BACKEND
+from ...utils.env import env_flag
 
 
-awq_ext, msg = try_import("gptqmodel_awq_kernels")
+# Shared runtime default: prefer accuracy first unless the user explicitly opts out.
+FP32_ACCUM = env_flag("GPTQMODEL_FP32_ACCUM", default=True)
+
+def _awq_cuda_gemm_forward(input, qweight, scales, qzeros, split_k_iters, fp32_accum: bool = FP32_ACCUM):
+    return awq_gemm_forward(input, qweight, scales, qzeros, split_k_iters, fp32_accum)
 
 
 class AwqGemmFn(torch.autograd.Function):
@@ -34,26 +39,28 @@ class AwqGemmFn(torch.autograd.Function):
         bias=None,
         out_features=0,
         prefer_backend=None,
+        fp32_accum=FP32_ACCUM,
     ):
-        if awq_ext is None:
-            raise ValueError(msg or "CUDA AWQ extension not available for AwqGEMMQuantLinear")
-
         ctx.save_for_backward(x, qweight, qzeros, scales, bias)
         ctx.out_features = out_features
 
         out_shape = x.shape[:-1] + (out_features,)
-        x = x.to(torch.float16)
         if x.shape[0] == 0:
             return torch.zeros(out_shape, dtype=x.dtype, device=x.device)
 
         # Above compute density threshold it is faster to just dequantize the whole thing and do simple matmul
         FULL_DEQUANT_MATMUL_THRESHOLD = x.shape[0] * x.shape[1] > 1024
         if FULL_DEQUANT_MATMUL_THRESHOLD:
-            out = awq_ext.dequantize_weights_cuda(qweight, scales, qzeros, 0, 0, 0, False)
-            out = torch.matmul(x, out)
+            out = awq_dequantize_weights(qweight, scales, qzeros, 0, 0, 0, False)
+            out = torch.matmul(x, out.to(dtype=x.dtype))
         else:
-            out = awq_ext.gemm_forward_cuda(
-                x.reshape(-1, x.shape[-1]), qweight, scales, qzeros, 8
+            out = _awq_cuda_gemm_forward(
+                x.reshape(-1, x.shape[-1]),
+                qweight,
+                scales,
+                qzeros,
+                8,
+                fp32_accum=fp32_accum,
             )
 
         out = out + bias if bias is not None else out
@@ -68,10 +75,7 @@ class AwqGemmFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         input, qweight, qzeros, scales, bias = ctx.saved_tensors
 
-        if awq_ext is None:
-            raise ValueError(msg or "CUDA AWQ extension not available for AwqGEMMQuantLinear")
-
-        weights = awq_ext.dequantize_weights_cuda(
+        weights = awq_dequantize_weights(
             qweight, scales, qzeros, 1, 0, 0, False
         ).to(grad_output.dtype)
 
@@ -80,11 +84,11 @@ class AwqGemmFn(torch.autograd.Function):
             batch_size = grad_output.shape[0]
             grad_input = grad_output.bmm(weights.transpose(0, 1).unsqueeze(0).repeat(batch_size, 1, 1))
 
-        return grad_input, None, None, None, None, None, None, None, None
+        return grad_input, None, None, None, None, None, None, None, None, None
 
 
-class AwqGEMMQuantLinear(AWQuantLinear):
-    SUPPORTS_BACKENDS = [BACKEND.GEMM]
+class AwqGEMMLinear(AWQuantLinear):
+    SUPPORTS_BACKENDS = [BACKEND.AWQ_GEMM]
     SUPPORTS_METHODS = [METHOD.AWQ]
     SUPPORTS_FORMATS = {FORMAT.GEMM: 60}
     SUPPORTS_BITS = [4]
@@ -102,7 +106,7 @@ class AwqGEMMQuantLinear(AWQuantLinear):
     SUPPORTS_PACK_DTYPES = [torch.int32]
     SUPPORTS_ADAPTERS = [Lora]
 
-    SUPPORTS_DTYPES = [torch.float16]
+    SUPPORTS_DTYPES = [torch.float16, torch.bfloat16]
 
     REQUIRES_FORMAT_V2 = False
 
@@ -111,8 +115,8 @@ class AwqGEMMQuantLinear(AWQuantLinear):
 
     @classmethod
     def validate_once(cls) -> Tuple[bool, Optional[Exception]]:
-        if awq_ext is None:
-            return False, ValueError(msg or "CUDA AWQ extension not available; cannot select AwqGEMMQuantLinear")
+        if not awq_runtime_available():
+            return False, ValueError(awq_runtime_error() or "CUDA AWQ extension not available; cannot select AwqGEMMLinear")
         else:
             return True, None
 
@@ -128,6 +132,7 @@ class AwqGEMMQuantLinear(AWQuantLinear):
         pack_dtype: torch.dtype = torch.int32,
         adapter: Adapter = None,
         register_buffers: bool = False,
+        fp32_accum: bool = FP32_ACCUM,
         **kwargs,
     ):
 
@@ -140,15 +145,23 @@ class AwqGEMMQuantLinear(AWQuantLinear):
             out_features=out_features,
             bias=bias,
             pack_dtype=pack_dtype,
-            backend=kwargs.pop("backend", BACKEND.GEMM),
+            backend=kwargs.pop("backend", BACKEND.AWQ_GEMM),
             adapter=adapter,
             register_buffers=register_buffers,
             **kwargs)
+        self.fp32_accum = bool(fp32_accum)
+
+    def _ensure_runtime_dtype(self, dtype: torch.dtype):
+        if self.scales is not None and (self.scales.dtype != dtype or not self.scales.is_contiguous()):
+            self.scales = self.scales.to(dtype=dtype).contiguous()
+        if self.bias is not None and (self.bias.dtype != dtype or not self.bias.is_contiguous()):
+            self.bias = self.bias.to(dtype=dtype).contiguous()
 
     def post_init(self):
-        # awq only accepts float16
-        if self.scales is not None:
+        if self.scales is not None and self.scales.dtype not in (torch.float16, torch.bfloat16):
             self.scales = self.scales.to(dtype=torch.float16)
+        if self.bias is not None and self.bias.dtype not in (torch.float16, torch.bfloat16):
+            self.bias = self.bias.to(dtype=torch.float16)
 
         super().post_init()
 
@@ -156,8 +169,13 @@ class AwqGEMMQuantLinear(AWQuantLinear):
         out_shape = x.shape[:-1] + (self.out_features,)
 
         input_dtype = x.dtype
-        if input_dtype != torch.float16:
-            x = x.half()
+        compute_dtype = input_dtype if input_dtype in (torch.float16, torch.bfloat16) else torch.float16
+        if input_dtype != compute_dtype:
+            x = x.to(compute_dtype)
+        elif not x.is_contiguous():
+            x = x.contiguous()
+
+        self._ensure_runtime_dtype(compute_dtype)
 
         ctx = nullcontext() if self.training else torch.inference_mode()
         with ctx:
@@ -171,9 +189,10 @@ class AwqGEMMQuantLinear(AWQuantLinear):
                 self.bias,
                 self.out_features,
                 "cuda",
+                self.fp32_accum,
             )
 
-        if input_dtype != torch.float16:
+        if out.dtype != input_dtype:
             out = out.to(dtype=input_dtype)
 
         if self.adapter:
@@ -188,9 +207,11 @@ class AwqGEMMQuantLinear(AWQuantLinear):
         zeros = zeros.t().contiguous()
         scale_zeros = zeros * scales
 
-        self.register_buffer("scales", scales.clone().half())
+        scale_dtype = scales.dtype if scales.dtype in (torch.float16, torch.bfloat16) else torch.float16
+        self.register_buffer("scales", scales.clone().to(scale_dtype))
         if linear.bias is not None:
-            self.register_buffer("bias", linear.bias.clone().half())
+            bias_dtype = linear.bias.dtype if linear.bias.dtype in (torch.float16, torch.bfloat16) else scale_dtype
+            self.register_buffer("bias", linear.bias.clone().to(bias_dtype))
         else:
             self.bias = None
 
@@ -255,5 +276,5 @@ class AwqGEMMQuantLinear(AWQuantLinear):
 
 __all__ = [
     "AwqGemmFn",
-    "AwqGEMMQuantLinear",
+    "AwqGEMMLinear",
 ]

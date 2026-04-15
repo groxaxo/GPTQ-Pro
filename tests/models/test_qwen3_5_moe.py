@@ -4,22 +4,21 @@
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 from model_test import ModelTest
 
-from gptqmodel.quantization.config import FailSafe, VramStrategy
-from gptqmodel.utils.eval import EVAL
+from gptqmodel.quantization.config import ExpertsRoutingOverride, Fallback, MoEConfig, VramStrategy
 
 
 class TestQwen3_5Moe(ModelTest):
-    FAILSAFE = FailSafe()
+    FALLBACK = Fallback()
     # FORMAT = FORMAT.GEMM
     # METHOD = METHOD.AWQ
 
     NATIVE_MODEL_ID = "/monster/data/model/Qwen3.5-35B-A3B"
-    EVAL_TASKS = {
-        EVAL.LM_EVAL.ARC_CHALLENGE: {
+    EVAL_TASKS_SLOW = {
+        "arc_challenge": {
             "acc": {"value": 0.5887, "floor_pct": 0.04},
             "acc_norm": {"value": 0.6100, "floor_pct": 0.04},
         },
-        EVAL.LM_EVAL.MMLU_STEM: {
+        "mmlu_stem": {
             "chat_template": False,
             "acc": {
                 "value": 0.8106,
@@ -27,9 +26,15 @@ class TestQwen3_5Moe(ModelTest):
             },
         },
     }
+    EVAL_TASKS_FAST = ModelTest.derive_fast_eval_tasks(EVAL_TASKS_SLOW)
 
-    VRAM_STRATEGY = VramStrategy.BALANCED
-    OFFLOAD_TO_DISK = False  # FIXME Currently, after defuser transforms the model, OFFLOAD_TO_DISK must be False for quantization.
+    DENSE_VRAM_STRATEGY = VramStrategy.EXCLUSIVE
+    # Keep the dense serial path on the first visible GPU and spread experts across the rest.
+    DENSE_VRAM_STRATEGY_DEVICES = ["cuda:0"]
+    MOE_VRAM_STRATEGY = VramStrategy.BALANCED
+    MOE_VRAM_STRATEGY_DEVICES = ["cuda:1", "cuda:2", "cuda:3", "cuda:4", "cuda:5"]
+    # Route every calibration token through every expert so MoE quant sees full coverage.
+    MOE_CONFIG = MoEConfig(routing=ExpertsRoutingOverride(num_experts_per_tok="all"))
 
     def test_qwen3_5_moe(self):
-        self.quant_lm_eval()
+        self.quantize_and_evaluate()
