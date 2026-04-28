@@ -702,7 +702,9 @@ class BaseQModel(nn.Module):
 
         if self.quantize_config.method in QUANTIZE_BLACK_LIST:
             raise ValueError(
-                f"Unsupported quantization operation for quant method: {self.quantize_config.method}"
+                f"Quantization method `{self.quantize_config.method}` is not supported in this repository. "
+                f"Only GPTQ quantization (METHOD.GPTQ) is allowed. "
+                f"Please use `GPTQConfig` or `QuantizeConfig` with `method=METHOD.GPTQ`."
             )
 
         if not self.support_batch_quantize:
