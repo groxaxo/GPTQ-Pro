@@ -72,15 +72,18 @@ def _build_gptq_pro_extension(verbose: bool):
             "-lineinfo",
             "-U__CUDA_NO_HALF_OPERATORS__",
             "-U__CUDA_NO_HALF_CONVERSIONS__",
-            # Target all Ampere SM variants:
+            # Target all Ampere SM variants with native SASS cubins:
             #   sm_80 — A100, A30, GA100 (data-centre Ampere)
             #   sm_86 — RTX 3090/3080/A6000, GA102/GA104/GA106 (consumer + pro Ampere)
             #   sm_87 — Jetson Orin / embedded Ampere
-            # Using -gencode for each ensures native SASS for each sub-arch
-            # instead of relying on JIT re-compilation of generic PTX at load time.
             "-gencode arch=compute_80,code=sm_80",
             "-gencode arch=compute_86,code=sm_86",
             "-gencode arch=compute_87,code=sm_87",
+            # Embed sm_87 PTX as a forward-compatible fallback so the kernel can
+            # also be loaded on post-Ampere devices (Ada sm_89, Hopper sm_90, …)
+            # that pass the major >= 8 capability check.  The CUDA driver will
+            # JIT-compile the PTX to native code on first use for those GPUs.
+            "-gencode arch=compute_87,code=compute_87",
         ],
         build_directory=build_directory,
         verbose=verbose,
