@@ -24,7 +24,11 @@ from ...utils.rocm import IS_ROCM
 class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
-    SUPPORTS_FORMATS = {FORMAT.GPTQ: 0, FORMAT.GPTQ_V2: 0}
+    # Priority 95 (above Marlin=90) so GPTQ-Pro is the first kernel tried on
+    # Ampere for symmetric 4-bit FP16 GPTQ without desc_act.  On pre-Ampere
+    # GPUs validate_device() will fail the sm_80 check and the selector falls
+    # through to Marlin automatically.
+    SUPPORTS_FORMATS = {FORMAT.GPTQ: 95, FORMAT.GPTQ_V2: 95}
     SUPPORTS_BITS = [4]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128, 256, 512, 1024]
     SUPPORTS_DESC_ACT = [False]

@@ -1465,8 +1465,20 @@ _UNAMBIGUOUS_EXPORT_METHOD_BY_FORMAT = {
     FORMAT.QQQ: METHOD.QQQ,
 }
 
-# inference only methods should go here
-QUANTIZE_BLACK_LIST = {}
+# Non-GPTQ methods are blocked from the quantize() flow.
+# GPTQ (and its format variants GPTQ_V2, MARLIN, BITBLAS) is the only
+# supported quantization algorithm in this repository.  Attempting to
+# quantize with any other method will raise a clear error at the start
+# of quantize() in BaseQModel.
+QUANTIZE_BLACK_LIST = {
+    METHOD.GGUF,
+    METHOD.FP8,
+    METHOD.BITSANDBYTES,
+    METHOD.QQQ,
+    METHOD.AWQ,
+    METHOD.EXL3,
+    METHOD.PARO,
+}
 
 # compat
 QUANT_CONFIG_ARG_SYNONYMS = {
