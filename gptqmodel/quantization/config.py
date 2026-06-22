@@ -2743,6 +2743,38 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
             **kwargs,
         )
 
+    # --- Named quality presets -------------------------------------------------
+    # IMPORTANT: these are *quantization-recipe* presets. They are independent of
+    # the runtime inference kernel, which is selected separately at load time
+    # (Marlin by default on Ampere). In particular, do not confuse this recipe
+    # family -- `gptq_pro()` / `*_4bit()` -- with the experimental
+    # `BACKEND.GPTQ_PRO` *kernel*; they share a name but are unrelated.
+
+    @classmethod
+    def fast_4bit(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
+        """Fastest-to-quantize 4-bit recipe: base GPTQ defaults (group-aware
+        reordering on; MSE scale search and GPTAQ off). Standard GPTQ output."""
+        return cls(bits=4, group_size=group_size, sym=True, **kwargs)
+
+    @classmethod
+    def quality_4bit(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
+        """Balanced 4-bit quality recipe: the speed-preserving `gptq_pro()` profile
+        (GAR + MSE scale search + activation-weighted MSE + adaptive damping)."""
+        return cls.gptq_pro(bits=4, group_size=group_size, **kwargs)
+
+    @classmethod
+    def max_quality_4bit(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
+        """Highest-quality 4-bit recipe: `quality_4bit` plus GPTAQ activation-aware
+        error feedback (a.k.a. GPTQv2)."""
+        return cls.max_quality(bits=4, group_size=group_size, **kwargs)
+
+    @classmethod
+    def experimental_3bit_rotation(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
+        """Experimental low-bit recipe: 3-bit `max_quality` plus Hadamard incoherence
+        rotation -- the dominant quality lever at <=3 bit. NOTE: rotation is gated to
+        llama/qwen2 architectures in this fork and will raise for other models."""
+        return cls.max_quality(bits=3, group_size=group_size, rotation="hadamard", **kwargs)
+
     @classmethod
     def from_quant_config(cls, quantize_cfg, format: str = None):
         valid_formats = set(FORMAT)

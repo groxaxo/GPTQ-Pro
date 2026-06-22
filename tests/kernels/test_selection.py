@@ -492,3 +492,26 @@ def test_gptq_pro_excluded_from_auto_selection_by_default():
     # GPTQ-Pro is still reachable when explicitly requested.
     explicit = importer.get_kernel_for_backend(BACKEND.GPTQ_PRO, METHOD.GPTQ, FORMAT.GPTQ)
     assert explicit is GptqProQuantLinear
+
+
+def test_gptq_pro_rejects_unsupported_configs():
+    """GPTQ-Pro is intentionally narrow (4-bit, symmetric, desc_act=False, FP16,
+    CUDA). Its validator must reject everything outside that envelope so the
+    selector can safely fall through to a broader kernel such as Marlin.
+    """
+    from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
+
+    base = {"bits": 4, "group_size": 128, "desc_act": False, "sym": True, "pack_dtype": torch.int32}
+
+    # The one supported envelope validates.
+    ok, _ = GptqProQuantLinear._validate(**base)
+    assert ok is True
+
+    # Each unsupported axis is rejected with an error.
+    for override in (
+        {"desc_act": True},  # act-order unsupported
+        {"sym": False},      # asymmetric unsupported
+        {"bits": 8},         # 8-bit unsupported (4-bit only)
+    ):
+        ok, err = GptqProQuantLinear._validate(**{**base, **override})
+        assert ok is False and err is not None, f"expected rejection for {override}"

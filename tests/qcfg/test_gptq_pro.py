@@ -46,6 +46,32 @@ def test_max_quality_accepts_rotation_passthrough():
     assert cfg.gptaq is not None
 
 
+def test_named_preset_ladder():
+    # fast: base GPTQ, no extra quality passes.
+    fast = QuantizeConfig.fast_4bit()
+    assert fast.bits == 4 and fast.format == FORMAT.GPTQ
+    assert fast.mse == 0.0
+    assert fast.gptaq is None
+
+    # quality: gptq_pro profile (GAR + MSE search + activation-weighted MSE).
+    quality = QuantizeConfig.quality_4bit()
+    assert quality.bits == 4
+    assert quality.mse == 2.0
+    assert quality.activation_weighted_mse is True
+    assert quality.gptaq is None
+
+    # max_quality: quality + GPTAQ error feedback.
+    maxq = QuantizeConfig.max_quality_4bit()
+    assert maxq.bits == 4
+    assert maxq.gptaq is not None and maxq.gptaq.alpha == 0.25
+
+    # experimental low-bit: 3-bit max_quality + Hadamard rotation.
+    exp = QuantizeConfig.experimental_3bit_rotation()
+    assert exp.bits == 3
+    assert exp.rotation == "hadamard"
+    assert exp.gptaq is not None
+
+
 def test_activation_weighted_mse_prioritizes_salient_columns():
     weights = torch.tensor([[0.1, 0.45, 0.8, 1.2]], dtype=torch.float32)
     importance = torch.tensor([1.0, 1.0, 8.0, 8.0], dtype=torch.float32)

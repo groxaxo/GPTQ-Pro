@@ -123,14 +123,21 @@ Ranked after fact-checking. Each item notes the verified rationale.
 **GPTAQ activation-aware error feedback** (`alpha=0.25`) by default. It stays in standard GPTQ
 output format (kernels unchanged) and accepts `rotation="hadamard"` for ≤3-bit incoherence
 processing (architecture-gated to llama/qwen2). *Why:* turns the existing near-SOTA toolbox
-into a one-line accuracy gain. Tests: `tests/qcfg/test_gptq_pro.py::test_max_quality_*`.
+into a one-line accuracy gain. A named recipe ladder is also provided to remove the
+"`gptq_pro` means two things" ambiguity (the quantization *recipe* vs the `BACKEND.GPTQ_PRO`
+*kernel* are unrelated): `fast_4bit()`, `quality_4bit()`, `max_quality_4bit()`,
+`experimental_3bit_rotation()`. Tests: `tests/qcfg/test_gptq_pro.py::test_max_quality_*`,
+`::test_named_preset_ladder`.
 
 **K1. Fix the kernel-selection priority. ✅ Implemented in this branch.** `gptq_pro` now
 defaults to auto-selection **priority 0** (explicit-backend only; never overrides Marlin),
 restored to 95 only via `GPTQMODEL_USE_GPTQ_PRO=1` — using the same opt-out convention as the
 ExllamaEora / TorchInt8 kernels. *Where:* `gptq_pro.py`. *Why:* removes a real, several-fold
-throughput regression on batched/prefill workloads. Test:
-`tests/kernels/test_selection.py::test_gptq_pro_excluded_from_auto_selection_by_default`.
+throughput regression on batched/prefill workloads. Tests:
+`tests/kernels/test_selection.py::test_gptq_pro_excluded_from_auto_selection_by_default`
+(Marlin wins by default; GPTQ-Pro explicit-only) and `::test_gptq_pro_rejects_unsupported_configs`
+(GPTQ-Pro's validator rejects `desc_act=True`, asymmetric, and non-4-bit so the selector safely
+falls through to the broader Marlin path).
 
 **K7. Benchmark + Marlin-parity harness. ◑ Partial.** The CPU-side selection guarantee is now
 locked by the unit test above. The remaining piece — a GPU numerical-parity + throughput
