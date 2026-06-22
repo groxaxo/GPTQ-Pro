@@ -9,6 +9,9 @@ This project keeps the excellent GPT-QModel foundation intact, while adding a GP
 > For stable upstream usage, use [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel).  
 > This fork is for GPTQ-Pro experimentation, local benchmarking, kernel validation, and practical model-quantization workflows.
 
+> 📋 See [`docs/ASSESSMENT_AND_ROADMAP.md`](docs/ASSESSMENT_AND_ROADMAP.md) for a fact-checked
+> assessment of current quantization quality and a prioritized, Ampere-focused improvement roadmap.
+
 ---
 
 ## Credits
