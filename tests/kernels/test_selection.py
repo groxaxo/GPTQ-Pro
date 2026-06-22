@@ -465,3 +465,30 @@ def test_gguf_does_not_accept_generic_torch_backend():
             quant_method=METHOD.GGUF,
             pack_dtype=torch.int32,
         )
+
+
+def test_gptq_pro_excluded_from_auto_selection_by_default():
+    """GPTQ-Pro is an experimental scaffold kernel; by default it must not win
+    auto-selection over the faster Marlin kernel. It stays reachable via an
+    explicit backend request, and only re-enters auto-selection (above Marlin)
+    when ``GPTQMODEL_USE_GPTQ_PRO=1`` is set at import time.
+    """
+    import os
+
+    if os.getenv("GPTQMODEL_USE_GPTQ_PRO"):
+        pytest.skip("GPTQMODEL_USE_GPTQ_PRO is set; GPTQ-Pro opts into auto-selection by design.")
+
+    from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
+    from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
+
+    # GPTQ-Pro is excluded from automatic selection for both GPTQ formats.
+    for fmt in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
+        auto_map = AUTO_BACKEND_KERNEL_MAPPING.get(METHOD.GPTQ, {}).get(fmt, {})
+        assert GptqProQuantLinear not in auto_map.values()
+
+    # Marlin remains an auto-selection candidate for GPTQ.
+    assert MarlinLinear in AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][FORMAT.GPTQ].values()
+
+    # GPTQ-Pro is still reachable when explicitly requested.
+    explicit = importer.get_kernel_for_backend(BACKEND.GPTQ_PRO, METHOD.GPTQ, FORMAT.GPTQ)
+    assert explicit is GptqProQuantLinear

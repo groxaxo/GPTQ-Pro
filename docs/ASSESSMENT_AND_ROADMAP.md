@@ -24,6 +24,11 @@ Both are fixable, and most of the fixes are low-effort because the hard parts (M
 quality algorithms, the `rotation="hadamard"` config) **already exist in this repo** and
 just need to be wired up or re-prioritized.
 
+> **✅ Implemented in this branch (Tier 1):** the kernel-priority regression (K1) and a
+> `max_quality()` quantization preset (Q1) are done and unit-tested — see the roadmap below.
+> The remaining items (GPU benchmark/parity harness, decode GEMV path, BF16, the Marlin-class
+> kernel work) are scoped but require CUDA hardware to build and verify.
+
 ---
 
 ## Part A — Current-state assessment
@@ -86,14 +91,19 @@ gap — but the missing `cp.async` pipelining, scalar decode, non-vectorized loa
 one-warp-per-CTA tiling, and per-K-tile re-staging of `B` will make it **materially slower
 than Marlin — likely several-fold, widening as batch grows** beyond M=1.
 
-**The critical issue is selection priority.** `GptqProQuantLinear` registers at **priority 95,
-above Marlin's 90** (`gptqmodel/nn_modules/qlinear/gptq_pro.py:27-31`) for symmetric INT4,
-`group_size=128`, FP16, `desc_act=False` on sm_80+ — which is *precisely* Marlin's fast path
-(Marlin is symmetric-only, supports group 128, FP16-native, no act-order). So for batched /
-prefill serving the selector picks the slow scaffold ahead of the battle-tested kernel: a
-real throughput regression on the project's own target hardware. Validation
-(`gptq_pro_validate.cu`) only checks one MMA tile + two tiny shapes (16×64×16, 13×41×29), and
-there are **no performance numbers anywhere in the repo** to justify the priority.
+**The critical issue is selection priority.** `GptqProQuantLinear` previously registered at
+**priority 95, above Marlin's 90** for symmetric INT4, `group_size=128`, FP16, `desc_act=False`
+on sm_80+ — which is *precisely* Marlin's fast path (Marlin is symmetric-only, supports group
+128, FP16-native, no act-order). So for batched / prefill serving the selector picked the slow
+scaffold ahead of the battle-tested kernel: a real throughput regression on the project's own
+target hardware. Validation (`gptq_pro_validate.cu`) only checks one MMA tile + two tiny shapes
+(16×64×16, 13×41×29), and there are **no performance numbers anywhere in the repo** to justify
+the priority.
+
+> **✅ Status (this branch): fixed.** `gptq_pro` now defaults to auto-selection **priority 0**
+> (explicit-backend only) so it never silently overrides Marlin; set `GPTQMODEL_USE_GPTQ_PRO=1`
+> to opt it back in at priority 95 for experimentation. See `gptq_pro.py` and the regression
+> test `tests/kernels/test_selection.py::test_gptq_pro_excluded_from_auto_selection_by_default`.
 
 **Genuinely-unused Ampere features:** `cp.async`, `ldmatrix`, LOP3, native BF16 in this path
 (it casts BF16→FP16 at `gptq_pro.py:178-179`), INT8 IMMA (W8A8), and 2:4 sparse tensor cores.
@@ -107,21 +117,26 @@ Ranked after fact-checking. Each item notes the verified rationale.
 
 ### Tier 1 — Quick wins (low effort, high impact, low risk)
 
-**Q1. Ship "quality presets" + sane defaults.** Add e.g. `QuantizeConfig.max_quality(...)`
-that switches on the existing levers (GAR/act-order, `mse≈2.0`, `activation_weighted_mse`,
-GPTAQ `alpha≈0.25` or FOEM `beta≈0.2`, sensible `damp_percent`; rotation for ≤3-bit). Reuse
-`_normalize_gptaq/_normalize_foem` (`config.py:1873-1890`). *Why:* turns the existing
-near-SOTA toolbox into one-line accuracy gains; biggest quality lever available.
+**Q1. Ship "quality presets". ✅ Implemented in this branch.** `QuantizeConfig.max_quality()`
+(`config.py`) extends the existing `gptq_pro()` profile (GAR + `mse=2.0` +
+`activation_weighted_mse` + adaptive damping + failsafe smoothing) by additionally enabling
+**GPTAQ activation-aware error feedback** (`alpha=0.25`) by default. It stays in standard GPTQ
+output format (kernels unchanged) and accepts `rotation="hadamard"` for ≤3-bit incoherence
+processing (architecture-gated to llama/qwen2). *Why:* turns the existing near-SOTA toolbox
+into a one-line accuracy gain. Tests: `tests/qcfg/test_gptq_pro.py::test_max_quality_*`.
 
-**K1. Fix / guard the kernel-selection priority.** Drop `gptq_pro` below Marlin
-(e.g. 85 < 90) **or** gate the 95 priority behind a measured "verified-faster" check / env
-flag, at minimum until K7 produces evidence. *Where:* `gptq_pro.py:31`. *Why:* removes a real,
-several-fold throughput regression on batched/prefill workloads. **Highest-ROI perf fix.**
+**K1. Fix the kernel-selection priority. ✅ Implemented in this branch.** `gptq_pro` now
+defaults to auto-selection **priority 0** (explicit-backend only; never overrides Marlin),
+restored to 95 only via `GPTQMODEL_USE_GPTQ_PRO=1` — using the same opt-out convention as the
+ExllamaEora / TorchInt8 kernels. *Where:* `gptq_pro.py`. *Why:* removes a real, several-fold
+throughput regression on batched/prefill workloads. Test:
+`tests/kernels/test_selection.py::test_gptq_pro_excluded_from_auto_selection_by_default`.
 
-**K7. Add a real benchmark + Marlin-parity harness.** Compare `gptq_pro` vs Marlin vs torch
-across M ∈ {1, 8, 64, 512} and assert numerical parity on realistic shapes. *Where:* extend
-`scripts/benchmark_gptq_pro.py`, `tests/kernels/`. *Why:* foundational — currently there is
-zero perf evidence; this gates K1 and every kernel change below.
+**K7. Benchmark + Marlin-parity harness. ◑ Partial.** The CPU-side selection guarantee is now
+locked by the unit test above. The remaining piece — a GPU numerical-parity + throughput
+benchmark of `gptq_pro` vs Marlin vs torch across M ∈ {1, 8, 64, 512} (extending
+`scripts/benchmark_gptq_pro.py`) — requires CUDA hardware not available in this environment, so
+it is left as the documented manual verification step before re-enabling the kernel.
 
 ### Tier 2 — Medium effort, high payoff
 

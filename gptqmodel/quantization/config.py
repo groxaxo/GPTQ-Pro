@@ -2713,6 +2713,37 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         return cls(**defaults)
 
     @classmethod
+    def max_quality(
+        cls,
+        *,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        gptaq_alpha: float = 0.25,
+        **kwargs,
+    ) -> "QuantizeConfig":
+        """Build a maximum-quality GPTQ profile (offline-only, standard GPTQ output).
+
+        Extends :meth:`gptq_pro` -- which already enables GAR (`act_group_aware`),
+        MSE scale search, activation-weighted MSE, adaptive damping, and failsafe
+        smoothing -- by additionally turning on GPTAQ activation-aware error
+        feedback (a.k.a. GPTQv2) by default. Every gain is quantization-time only;
+        the emitted checkpoint stays in standard GPTQ format, so existing
+        GPTQ/Marlin/ExLlama/vLLM kernels run unchanged.
+
+        For very low bit-widths (2-3 bit), the dominant additional quality lever is
+        Hadamard incoherence processing: pass ``rotation="hadamard"``. Note that in
+        this fork rotation is currently gated to llama/qwen2 architectures.
+        """
+        return cls.gptq_pro(
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            gptaq_alpha=gptaq_alpha,
+            **kwargs,
+        )
+
+    @classmethod
     def from_quant_config(cls, quantize_cfg, format: str = None):
         valid_formats = set(FORMAT)
         format_auto_inferred = False

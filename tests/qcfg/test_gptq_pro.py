@@ -1,6 +1,6 @@
 import torch
 
-from gptqmodel.quantization import QuantizeConfig
+from gptqmodel.quantization import FORMAT, QuantizeConfig
 from gptqmodel.quantization.quantizer import Quantizer
 
 
@@ -19,6 +19,31 @@ def test_gptq_pro_enables_activation_weighted_mse():
     assert cfg.activation_weighted_mse is True
     assert cfg.act_group_aware is True
     assert cfg.desc_act is False
+
+
+def test_max_quality_extends_gptq_pro_with_gptaq():
+    cfg = QuantizeConfig.max_quality()
+
+    # Inherits the gptq_pro speed-preserving quality levers...
+    assert cfg.activation_weighted_mse is True
+    assert cfg.act_group_aware is True
+    assert cfg.desc_act is False
+    assert cfg.mse == 2.0
+    # ...and additionally enables GPTAQ activation-aware error feedback.
+    assert cfg.gptaq is not None
+    assert cfg.gptaq.alpha == 0.25
+    # Output format stays standard GPTQ so existing kernels run unchanged.
+    assert cfg.format == FORMAT.GPTQ
+
+
+def test_max_quality_accepts_rotation_passthrough():
+    # Hadamard incoherence processing is the dominant low-bit (<=3 bit) lever and
+    # must be opt-in (it is architecture-gated to llama/qwen2 in this fork).
+    cfg = QuantizeConfig.max_quality(bits=3, rotation="hadamard")
+
+    assert cfg.bits == 3
+    assert cfg.rotation == "hadamard"
+    assert cfg.gptaq is not None
 
 
 def test_activation_weighted_mse_prioritizes_salient_columns():
