@@ -467,31 +467,39 @@ def test_gguf_does_not_accept_generic_torch_backend():
         )
 
 
-def test_gptq_pro_excluded_from_auto_selection_by_default():
-    """GPTQ-Pro is an experimental scaffold kernel; by default it must not win
-    auto-selection over the faster Marlin kernel. It stays reachable via an
-    explicit backend request, and only re-enters auto-selection (above Marlin)
-    when ``GPTQMODEL_USE_GPTQ_PRO=1`` is set at import time.
+def test_gptq_pro_wins_auto_selection_above_marlin_by_default():
+    """GPTQ-Pro is this fork's custom Ampere kernel and the intended default: by
+    default it joins auto-selection at a higher priority than Marlin for both GPTQ
+    formats, so the selector prefers it on Marlin's own fast path. Setting
+    ``GPTQMODEL_DISABLE_GPTQ_PRO=1`` drops it back out (Marlin fallback); it always
+    stays reachable via an explicit backend request.
     """
     import os
-
-    if os.getenv("GPTQMODEL_USE_GPTQ_PRO"):
-        pytest.skip("GPTQMODEL_USE_GPTQ_PRO is set; GPTQ-Pro opts into auto-selection by design.")
 
     from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
     from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
 
-    # GPTQ-Pro is excluded from automatic selection for both GPTQ formats.
-    for fmt in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
-        auto_map = AUTO_BACKEND_KERNEL_MAPPING.get(METHOD.GPTQ, {}).get(fmt, {})
-        assert GptqProQuantLinear not in auto_map.values()
-
-    # Marlin remains an auto-selection candidate for GPTQ.
-    assert MarlinLinear in AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][FORMAT.GPTQ].values()
-
-    # GPTQ-Pro is still reachable when explicitly requested.
+    # GPTQ-Pro is always reachable when explicitly requested, regardless of the flag.
     explicit = importer.get_kernel_for_backend(BACKEND.GPTQ_PRO, METHOD.GPTQ, FORMAT.GPTQ)
     assert explicit is GptqProQuantLinear
+
+    if os.getenv("GPTQMODEL_DISABLE_GPTQ_PRO"):
+        # Opt-out: GPTQ-Pro leaves auto-selection and Marlin handles the fast path.
+        for fmt in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
+            auto_map = AUTO_BACKEND_KERNEL_MAPPING.get(METHOD.GPTQ, {}).get(fmt, {})
+            assert GptqProQuantLinear not in auto_map.values()
+        assert MarlinLinear in AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][FORMAT.GPTQ].values()
+        return
+
+    # Default: GPTQ-Pro is an auto-selection candidate for both GPTQ formats...
+    for fmt in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
+        auto_map = AUTO_BACKEND_KERNEL_MAPPING.get(METHOD.GPTQ, {}).get(fmt, {})
+        assert GptqProQuantLinear in auto_map.values()
+        # ...and outranks Marlin (90) on the shared GPTQ fast path.
+        assert GptqProQuantLinear.SUPPORTS_FORMATS[fmt] > MarlinLinear.SUPPORTS_FORMATS[FORMAT.GPTQ]
+
+    # Marlin remains available as the fallback candidate.
+    assert MarlinLinear in AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][FORMAT.GPTQ].values()
 
 
 def test_gptq_pro_rejects_unsupported_configs():

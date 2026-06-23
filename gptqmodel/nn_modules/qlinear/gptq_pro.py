@@ -22,27 +22,27 @@ from ...utils.gptq_pro import (
 from ...utils.rocm import IS_ROCM
 
 
-# GPTQ-Pro is an experimental Tensor-Core scaffold kernel (one warp per CTA; no
-# cp.async / ldmatrix / multi-stage software pipeline; scalar INT4 decode). It is
-# numerically correct but not yet performance-competitive with the battle-tested
-# Marlin kernel, so by default it must NOT win auto-selection over Marlin.
+# GPTQ-Pro is this fork's custom Ampere Tensor-Core INT4 kernel and the intended
+# default for symmetric 4-bit FP16 GPTQ on sm_80+. It registers at priority 95 --
+# above Marlin's 90 -- so the auto-selector prefers it on Marlin's own fast path
+# (sym INT4, group 128, FP16, no desc_act). On pre-Ampere GPUs the sm_80 check in
+# validate_device() fails and the selector falls through to Marlin automatically.
 #
-# Priority 0 keeps the kernel available via an explicit `backend=BACKEND.GPTQ_PRO`
-# request while excluding it from automatic selection (same convention used by the
-# opt-in ExllamaEora / TorchInt8 kernels). Set `GPTQMODEL_USE_GPTQ_PRO=1` to opt it
-# back into auto-selection above Marlin (priority 95) for experimentation and
-# benchmarking.
-_GPTQ_PRO_OPT_IN = env_flag("GPTQMODEL_USE_GPTQ_PRO", default=False)
-_GPTQ_PRO_AUTO_PRIORITY = 95 if _GPTQ_PRO_OPT_IN else 0
+# Caveat: the kernel is still a Tensor-Core scaffold (one warp per CTA; no cp.async
+# / ldmatrix / multi-stage pipeline; scalar INT4 decode) with no in-repo throughput
+# benchmark yet, so it may trail Marlin on batched/prefill until optimized. Set
+# `GPTQMODEL_DISABLE_GPTQ_PRO=1` to drop it out of auto-selection (priority 0) and
+# fall back to Marlin without recompiling.
+_GPTQ_PRO_DISABLED = env_flag("GPTQMODEL_DISABLE_GPTQ_PRO", default=False)
+_GPTQ_PRO_AUTO_PRIORITY = 0 if _GPTQ_PRO_DISABLED else 95
 
 
 class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
-    # Auto-selection priority is controlled by `_GPTQ_PRO_AUTO_PRIORITY` above:
-    # 0 by default (explicit-backend only; never overrides Marlin), or 95 (above
-    # Marlin=90) when `GPTQMODEL_USE_GPTQ_PRO=1`. On pre-Ampere GPUs the sm_80
-    # check in validate_device() fails and the selector falls through to Marlin.
+    # Priority 95 (above Marlin=90) by default so GPTQ-Pro wins auto-selection on
+    # Ampere for symmetric 4-bit FP16 GPTQ without desc_act; `_GPTQ_PRO_AUTO_PRIORITY`
+    # drops to 0 (Marlin fallback) when GPTQMODEL_DISABLE_GPTQ_PRO=1. See above.
     SUPPORTS_FORMATS = {FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY, FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY}
     SUPPORTS_BITS = [4]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128, 256, 512, 1024]
