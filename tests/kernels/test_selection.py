@@ -467,39 +467,69 @@ def test_gguf_does_not_accept_generic_torch_backend():
         )
 
 
-def test_gptq_pro_wins_auto_selection_above_marlin_by_default():
-    """GPTQ-Pro is this fork's custom Ampere kernel and the intended default: by
-    default it joins auto-selection at a higher priority than Marlin for both GPTQ
-    formats, so the selector prefers it on Marlin's own fast path. Setting
-    ``GPTQMODEL_DISABLE_GPTQ_PRO=1`` drops it back out (Marlin fallback); it always
-    stays reachable via an explicit backend request.
+def test_gptq_pro_is_top_priority_default_for_gptq():
+    """GPTQ-Pro is this fork's UNCONDITIONAL default kernel: priority 120 puts it at the
+    very top of the GPTQ auto-selection stack (above HFKernel/TorchAten=110, Machete=100,
+    Marlin=90) for both GPTQ formats, so AUTO selects it first wherever it validates.
+    There is no disable env flag anymore; a different kernel is reached only via an
+    explicit backend request (see test_explicit_backend_override_bypasses_gptq_pro_default).
     """
-    import os
-
+    from gptqmodel.nn_modules.qlinear.gemm_hf_kernel import HFKernelLinear
     from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
     from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
 
-    # GPTQ-Pro is always reachable when explicitly requested, regardless of the flag.
-    explicit = importer.get_kernel_for_backend(BACKEND.GPTQ_PRO, METHOD.GPTQ, FORMAT.GPTQ)
-    assert explicit is GptqProQuantLinear
-
-    if os.getenv("GPTQMODEL_DISABLE_GPTQ_PRO"):
-        # Opt-out: GPTQ-Pro leaves auto-selection and Marlin handles the fast path.
-        for fmt in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
-            auto_map = AUTO_BACKEND_KERNEL_MAPPING.get(METHOD.GPTQ, {}).get(fmt, {})
-            assert GptqProQuantLinear not in auto_map.values()
-        assert MarlinLinear in AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][FORMAT.GPTQ].values()
-        return
-
-    # Default: GPTQ-Pro is an auto-selection candidate for both GPTQ formats...
     for fmt in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
-        auto_map = AUTO_BACKEND_KERNEL_MAPPING.get(METHOD.GPTQ, {}).get(fmt, {})
-        assert GptqProQuantLinear in auto_map.values()
-        # ...and outranks Marlin (90) on the shared GPTQ fast path.
+        assert GptqProQuantLinear.SUPPORTS_FORMATS[fmt] == 120
+        # Strictly outranks every other GPTQ-method kernel.
         assert GptqProQuantLinear.SUPPORTS_FORMATS[fmt] > MarlinLinear.SUPPORTS_FORMATS[FORMAT.GPTQ]
+        assert GptqProQuantLinear.SUPPORTS_FORMATS[fmt] > HFKernelLinear.SUPPORTS_FORMATS[fmt]
+        assert GptqProQuantLinear.SUPPORTS_FORMATS[fmt] > MacheteLinear.SUPPORTS_FORMATS[FORMAT.GPTQ]
 
-    # Marlin remains available as the fallback candidate.
+        # It is the highest-priority (first) entry in the ordered auto-selection map.
+        auto_map = AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][fmt]
+        assert GptqProQuantLinear in auto_map.values()
+        assert next(iter(auto_map.values())) is GptqProQuantLinear
+
+    # Marlin remains an auto-selection candidate (the fall-through target).
     assert MarlinLinear in AUTO_BACKEND_KERNEL_MAPPING[METHOD.GPTQ][FORMAT.GPTQ].values()
+
+
+def test_gptq_pro_rejects_unsupported_configs_without_raising():
+    """Now that GPTQ-Pro sits at the top of auto-selection, clean fall-through to the
+    next kernel depends on config validation returning False (never raising) for
+    everything it cannot serve. ``_validate`` isolates the config/device checks from the
+    CUDA-extension load gate in ``validate``, so this is deterministic on a CPU-only box.
+    """
+    from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
+
+    base = dict(bits=4, group_size=128, desc_act=False, sym=True,
+                pack_dtype=torch.int32, dtype=torch.float16)
+
+    # The supported "fast path" config validates (device=None skips the cc>=8.0 gate).
+    ok, _ = GptqProQuantLinear._validate(device=None, **base)
+    assert ok is True
+
+    # Each unsupported config is REJECTED (returns False, err) rather than raising.
+    for override in (
+        {"bits": 3}, {"bits": 8}, {"sym": False}, {"desc_act": True},
+        {"dtype": torch.bfloat16}, {"pack_dtype": torch.int16}, {"group_size": 24},
+    ):
+        cfg = dict(base, **override)
+        ok, err = GptqProQuantLinear._validate(device=None, **cfg)
+        assert ok is False and err is not None, f"expected rejection for {override}"
+
+    # CPU device is rejected (CUDA-only); validate_device's raise is caught -> (False, err).
+    ok, err = GptqProQuantLinear._validate(device=DEVICE.CPU, **base)
+    assert ok is False and err is not None
+
+
+def test_explicit_backend_override_bypasses_gptq_pro_default():
+    """The disable env flag is gone; the only escape hatch is an explicit backend."""
+    from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
+    from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
+
+    assert importer.get_kernel_for_backend(BACKEND.GPTQ_PRO, METHOD.GPTQ, FORMAT.GPTQ) is GptqProQuantLinear
+    assert importer.get_kernel_for_backend(BACKEND.MARLIN, METHOD.GPTQ, FORMAT.GPTQ) is MarlinLinear
 
 
 def test_gptq_pro_rejects_unsupported_configs():

@@ -15,21 +15,22 @@
   act-order + MSE scale search + Hadamard rotation + EoRA + vendored AutoRound), but almost
   every quality lever is **OFF by default**. A plain `QuantizeConfig(bits=4, group_size=128)`
   runs ordinary GPTQ and leaves measurable accuracy on the table.
-- The custom **`gptq_pro` CUDA kernel** is this fork's flagship and is **kept at higher
-  selection priority than Marlin** for the common case the project targets — by design. It is
-  still an **unoptimized scaffold**, so until it gains the missing optimizations it likely
-  trails Marlin on batched / prefill; there are no in-repo benchmarks yet to quantify the gap.
-  The path forward is to *optimize and measure* the kernel (Tier 2/3 + K7), with a
-  `GPTQMODEL_DISABLE_GPTQ_PRO=1` switch for an instant Marlin fallback — not to demote it.
+- The custom **`gptq_pro` CUDA kernel** is this fork's flagship and is the **unconditional
+  auto-selection default** (priority 120, above every other GPTQ kernel) wherever it can run —
+  by design. It is still an **unoptimized scaffold**, so until it gains the missing
+  optimizations it likely trails Marlin/Machete on batched / prefill; there are no in-repo
+  benchmarks yet to quantify the gap. This is **default-by-policy, not a performance claim**;
+  the path forward is to *optimize and measure* the kernel (Tier 2/3 + K7). To run a different
+  kernel, request it explicitly (e.g. `backend=BACKEND.MARLIN`).
 
 Both are fixable, and most of the fixes are low-effort because the hard parts (Marlin, the
 quality algorithms, the `rotation="hadamard"` config) **already exist in this repo** and
 just need to be wired up or re-prioritized.
 
 > **✅ Implemented in this branch (Tier 1):** a `max_quality()` quantization preset + named
-> recipe ladder (Q1) is done and unit-tested. GPTQ-Pro is kept as the **default kernel above
-> Marlin** (priority 95) — this fork's custom Ampere kernel is the whole point — now with a
-> `GPTQMODEL_DISABLE_GPTQ_PRO=1` escape hatch for Marlin A/B fallback (K1). The remaining items
+> recipe ladder (Q1) is done and unit-tested. GPTQ-Pro is the **unconditional default kernel**
+> (priority 120, above HFKernel/TorchAten/Machete/Marlin) wherever it validates — this fork's
+> custom kernel is the whole point; an explicit `backend=` is the only override (K1). The remaining items
 > (GPU benchmark/parity harness to close the perf gap, decode GEMV path, BF16, the Marlin-class
 > kernel work) are scoped but require CUDA hardware to build and verify.
 
@@ -95,20 +96,22 @@ gap — but the missing `cp.async` pipelining, scalar decode, non-vectorized loa
 one-warp-per-CTA tiling, and per-K-tile re-staging of `B` will make it **materially slower
 than Marlin — likely several-fold, widening as batch grows** beyond M=1.
 
-**Selection priority is by design.** `GptqProQuantLinear` registers at **priority 95, above
-Marlin's 90** for symmetric INT4, `group_size=128`, FP16, `desc_act=False` on sm_80+ — which is
-*precisely* Marlin's fast path (Marlin is symmetric-only, supports group 128, FP16-native, no
-act-order). GPTQ-Pro is this fork's flagship kernel, so it is intentionally the default there.
-The open item is purely performance: until the scaffold gains the missing optimizations it may
-trail Marlin on batched / prefill, and there are **no in-repo performance numbers** yet to
+**Selection priority is by design.** `GptqProQuantLinear` registers at **priority 120 — the top
+of the GPTQ kernel stack**, above HFKernel/TorchAten (110, CPU-only), Machete (100) and Marlin
+(90) — for symmetric INT4, `group_size=128`, FP16, `desc_act=False` on sm_80+ (precisely Marlin's
+fast path, and Machete's on Hopper). GPTQ-Pro is this fork's flagship kernel, so it is
+intentionally the **unconditional default** wherever it validates. This is default-by-policy: the
+open item is purely performance — until the scaffold gains the missing optimizations it may trail
+Marlin/Machete on batched / prefill, and there are **no in-repo performance numbers** yet to
 quantify the gap (validation `gptq_pro_validate.cu` only checks one MMA tile + two tiny shapes,
 16×64×16 and 13×41×29). The resolution is to *optimize the kernel* (Tier 2/3) and *measure* it
-(K7) — not to cede the fast path to Marlin.
+(K7) — not to cede the fast path.
 
-> **✅ Status (this branch).** `gptq_pro` stays the default at auto-selection **priority 95**
-> (above Marlin). For an A/B fallback without recompiling, set `GPTQMODEL_DISABLE_GPTQ_PRO=1` to
-> drop it to priority 0. See `gptq_pro.py` and the test
-> `tests/kernels/test_selection.py::test_gptq_pro_wins_auto_selection_above_marlin_by_default`.
+> **✅ Status (this branch).** `gptq_pro` is the default at auto-selection **priority 120** (top
+> of the stack). There is no disable flag; to run another kernel, request it explicitly
+> (`backend=BACKEND.MARLIN`). See `gptq_pro.py` and the tests
+> `tests/kernels/test_selection.py::test_gptq_pro_is_top_priority_default_for_gptq` /
+> `::test_gptq_pro_rejects_unsupported_configs_without_raising`.
 
 **Genuinely-unused Ampere features:** `cp.async`, `ldmatrix`, LOP3, native BF16 in this path
 (it casts BF16→FP16 at `gptq_pro.py:178-179`), INT8 IMMA (W8A8), and 2:4 sparse tensor cores.
@@ -134,16 +137,17 @@ into a one-line accuracy gain. A named recipe ladder is also provided to remove 
 `experimental_3bit_rotation()`. Tests: `tests/qcfg/test_gptq_pro.py::test_max_quality_*`,
 `::test_named_preset_ladder`.
 
-**K1. Keep GPTQ-Pro the default, with a fallback switch. ✅ Implemented in this branch.**
-`gptq_pro` stays at auto-selection **priority 95** (above Marlin=90) — it is this fork's custom
-kernel and the intended default on Ampere — and `GPTQMODEL_DISABLE_GPTQ_PRO=1` drops it to
-priority 0 (Marlin fallback) for A/B testing without recompiling. *Where:* `gptq_pro.py`. *Why:*
-the custom kernel is the project's reason to exist; the residual perf risk is handled by K7
-(measure) and the escape hatch (revert per-run), not by demoting it. Tests:
-`tests/kernels/test_selection.py::test_gptq_pro_wins_auto_selection_above_marlin_by_default`
-(GPTQ-Pro outranks Marlin by default; honors the disable flag) and
-`::test_gptq_pro_rejects_unsupported_configs` (its validator rejects `desc_act=True`, asymmetric,
-and non-4-bit so the selector safely falls through to Marlin for those configs).
+**K1. Make GPTQ-Pro the unconditional default kernel. ✅ Implemented in this branch.**
+`gptq_pro` registers at auto-selection **priority 120** — the top of the GPTQ stack, above
+HFKernel/TorchAten (110), Machete (100) and Marlin (90) — so AUTO always prefers it wherever it
+validates (CUDA sm_80+, FP16, sym, 4-bit, no desc_act). There is no disable env flag; the only
+override is an explicit `backend=`. *Where:* `gptq_pro.py`. *Why:* the custom kernel is the
+project's reason to exist (default-by-policy); the residual perf risk is handled by K7 (measure),
+not by demoting it. Tests:
+`tests/kernels/test_selection.py::test_gptq_pro_is_top_priority_default_for_gptq` (top priority /
+first in the auto map), `::test_gptq_pro_rejects_unsupported_configs_without_raising` (validate()
+rejects `desc_act=True`, asymmetric, non-4-bit, bf16, CPU and bad group_size **without raising**,
+so the selector safely falls through), and `::test_explicit_backend_override_bypasses_gptq_pro_default`.
 
 **K7. Benchmark + Marlin-parity harness. ◑ Partial — now the key item.** The CPU-side selection
 behavior (GPTQ-Pro default, disable-flag fallback) is locked by the unit test above. The
