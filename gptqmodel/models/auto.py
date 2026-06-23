@@ -159,9 +159,11 @@ TRANSFORMERS_SUPPORTS_QWEN3_5 = Version(TRANSFORMERS_VERSION) >= Version("5.2.0"
 if TRANSFORMERS_SUPPORTS_QWEN3_5:
     from .definitions.qwen3_5 import Qwen3_5QModel  # noqa: E402
     from .definitions.qwen3_5_moe import Qwen3_5_MoeQModel  # noqa: E402
+    from .definitions.qwen3_5_moe_text import Qwen3_5_MoeTextQModel  # noqa: E402
 else:
     Qwen3_5QModel = None
     Qwen3_5_MoeQModel = None
+    Qwen3_5_MoeTextQModel = None
 
 
 MODEL_MAP = {
@@ -279,6 +281,11 @@ if Qwen3_5QModel is not None:
 
 if Qwen3_5_MoeQModel is not None:
     MODEL_MAP["qwen3_5_moe"] = Qwen3_5_MoeQModel
+
+if Qwen3_5_MoeTextQModel is not None:
+    # text-only Qwen3.5-MoE (Qwen3_5MoeForCausalLM); model.* layout, no processor.
+    # NOT the multimodal model.language_model.* layout above.
+    MODEL_MAP["qwen3_5_moe_text"] = Qwen3_5_MoeTextQModel
 
 SUPPORTED_MODELS = list(MODEL_MAP.keys())
 
