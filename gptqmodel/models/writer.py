@@ -40,7 +40,6 @@ from ..quantization.config import (
     resolve_quant_format,
 )
 from ..utils.backend import BACKEND
-from ..utils.exllamav3 import build_exllamav3_tensor_storage
 from ..utils.hf import (
     prepare_remote_code_compat,
     sanitize_generation_config_file,
@@ -573,12 +572,7 @@ def ModelWriter(cls):
                 f"Using 'format = {FORMAT.GPTQ_V2}': the serialized model is only supported by GPT-QModel version >= {MIN_VERSION_WITH_V2}."
             )
 
-        if runtime_format == FORMAT.EXL3:
-            tensor_storage = build_exllamav3_tensor_storage(self.model)
-            quantize_config.tensor_storage = tensor_storage
-            self.quantize_config.tensor_storage = copy.deepcopy(tensor_storage)
-
-        if self.load_quantized_model and runtime_format != FORMAT.EXL3:
+        if self.load_quantized_model:
             self.model = self.get_model_with_quantize(
                 qcfg=quantize_config,
                 model_id_or_path=self.model_local_path,

@@ -1,6 +1,6 @@
 import torch
 
-from gptqmodel.quantization import QuantizeConfig
+from gptqmodel.quantization import FORMAT, QuantizeConfig
 from gptqmodel.quantization.quantizer import Quantizer
 
 
@@ -19,6 +19,57 @@ def test_gptq_pro_enables_activation_weighted_mse():
     assert cfg.activation_weighted_mse is True
     assert cfg.act_group_aware is True
     assert cfg.desc_act is False
+
+
+def test_max_quality_extends_gptq_pro_with_gptaq():
+    cfg = QuantizeConfig.max_quality()
+
+    # Inherits the gptq_pro speed-preserving quality levers...
+    assert cfg.activation_weighted_mse is True
+    assert cfg.act_group_aware is True
+    assert cfg.desc_act is False
+    assert cfg.mse == 2.0
+    # ...and additionally enables GPTAQ activation-aware error feedback.
+    assert cfg.gptaq is not None
+    assert cfg.gptaq.alpha == 0.25
+    # Output format stays standard GPTQ so existing kernels run unchanged.
+    assert cfg.format == FORMAT.GPTQ
+
+
+def test_max_quality_accepts_rotation_passthrough():
+    # Hadamard incoherence processing is the dominant low-bit (<=3 bit) lever and
+    # must be opt-in (it is architecture-gated to llama/qwen2 in this fork).
+    cfg = QuantizeConfig.max_quality(bits=3, rotation="hadamard")
+
+    assert cfg.bits == 3
+    assert cfg.rotation == "hadamard"
+    assert cfg.gptaq is not None
+
+
+def test_named_preset_ladder():
+    # fast: base GPTQ, no extra quality passes.
+    fast = QuantizeConfig.fast_4bit()
+    assert fast.bits == 4 and fast.format == FORMAT.GPTQ
+    assert fast.mse == 0.0
+    assert fast.gptaq is None
+
+    # quality: gptq_pro profile (GAR + MSE search + activation-weighted MSE).
+    quality = QuantizeConfig.quality_4bit()
+    assert quality.bits == 4
+    assert quality.mse == 2.0
+    assert quality.activation_weighted_mse is True
+    assert quality.gptaq is None
+
+    # max_quality: quality + GPTAQ error feedback.
+    maxq = QuantizeConfig.max_quality_4bit()
+    assert maxq.bits == 4
+    assert maxq.gptaq is not None and maxq.gptaq.alpha == 0.25
+
+    # experimental low-bit: 3-bit max_quality + Hadamard rotation.
+    exp = QuantizeConfig.experimental_3bit_rotation()
+    assert exp.bits == 3
+    assert exp.rotation == "hadamard"
+    assert exp.gptaq is not None
 
 
 def test_activation_weighted_mse_prioritizes_salient_columns():

@@ -11,6 +11,17 @@ from gptqmodel.models.definitions.ovis import OvisQModel
 from gptqmodel.models.definitions.ovis2 import Ovis2QModel
 from gptqmodel.models.definitions.qwen3_vl import Qwen3_VLQModel
 
+# Qwen3.5 multimodal classes are gated on transformers >= 5.2; import defensively so this
+# helper still works on older transformers (they simply won't be candidates).
+try:
+    from gptqmodel.models.definitions.qwen3_5_moe import Qwen3_5_MoeQModel
+except Exception:
+    Qwen3_5_MoeQModel = None
+try:
+    from gptqmodel.models.definitions.qwen3_5 import Qwen3_5QModel
+except Exception:
+    Qwen3_5QModel = None
+
 
 def format_ovis_dataset(image, assistant):
     return {
@@ -92,7 +103,15 @@ def get_calib_dataset(model):
     if isinstance(model, Ovis2QModel):
         return prepare_dataset(format_ovis2_dataset, n_sample=20)
 
-    if isinstance(model, BaseQwen2VLGPTQ) or isinstance(model, Qwen3_VLQModel) or isinstance(model, MiniCPMOQModel) or isinstance(model, MiniCPMVQModel):
+    # Qwen-VL conversation format also drives Qwen3.5(-MoE) multimodal calibration: those
+    # classes reuse the Qwen3-VL processor pipeline (verified end-to-end on Qwen3.5-35B-A3B).
+    qwen_vl_format_classes = tuple(
+        c for c in (
+            BaseQwen2VLGPTQ, Qwen3_VLQModel, Qwen3_5_MoeQModel, Qwen3_5QModel,
+            MiniCPMOQModel, MiniCPMVQModel,
+        ) if c is not None
+    )
+    if isinstance(model, qwen_vl_format_classes):
         return prepare_dataset(format_qwen2_vl_dataset, n_sample=20)
 
     if isinstance(model, BaseQwen2_5_OmniGPTQ):

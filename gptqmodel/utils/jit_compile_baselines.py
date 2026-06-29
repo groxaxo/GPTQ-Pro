@@ -16,15 +16,7 @@ from __future__ import annotations
 
 
 JIT_COMPILE_BASELINE_SECONDS: dict[str, float] = {
-    "gptqmodel_awq_ops": 61.640,
-    "gptqmodel_exllamav2_awq_ops": 35.421,
-    "gptqmodel_exllamav2_ops": 34.528,
-    "gptqmodel_exllamav3_ops": 61.871,
-    "gptqmodel_marlin_bf16_ops": 120.634,
-    "gptqmodel_marlin_fp16_ops": 116.863,
     "gptqmodel_pack_block_cpu": 31.096,
-    "gptqmodel_paroquant_rotation": 78.430,
-    "gptqmodel_qqq_ops": 82.492,
 }
 
 

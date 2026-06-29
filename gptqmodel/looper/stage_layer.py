@@ -28,11 +28,8 @@ from ..quantization.config import GcMode
 import torch
 
 from .. import DEBUG_ON, DEVICE_THREAD_POOL
-from ..looper.awq_processor import AWQProcessor
 from ..looper.gptq_processor import GPTQProcessor
 from ..looper.named_module import NamedModule
-from ..looper.paroquant_processor import ParoQuantProcessor
-from ..looper.qqq_processor import QQQProcessor
 from ..utils.device import get_device, get_device_new
 from ..utils.looper_helpers import normalize_device_like
 from ..utils.logger import live_renderables_suppressed, log_time_block, setup_logger
@@ -83,16 +80,10 @@ def _should_drain_finalize_futures_synchronously(
     *,
     finalize_tasks,
 ) -> bool:
-    """Decide whether one layer must finish finalization before the next begins.
-
-    ParoQuant layer/group optimization holds substantially more live CUDA state
-    than the weight-only paths. Letting its finalizers overlap the next layer
-    can visibly ratchet active VRAM upward from layer N to N+1, so ParoQuant
-    always drains per-layer finalizers synchronously.
-    """
+    """Decide whether one layer must finish finalization before the next begins."""
     if looper.gptq_model.quantize_config.wait_for_submodule_finalizers:
         return True
-    return any(isinstance(process, ParoQuantProcessor) for process, *_ in finalize_tasks)
+    return False
 
 
 def _should_empty_cache_after_sync_finalize(
@@ -100,18 +91,9 @@ def _should_empty_cache_after_sync_finalize(
     *,
     finalize_tasks,
 ) -> bool:
-    """Release CUDA cache after synchronous ParoQuant finalization when offload is active.
-
-    Disk offload correctly moves finalized modules out of the live model path,
-    but CUDA's allocator can still hold onto the just-freed pools across layer
-    boundaries. That shows up as a steady nvidia-smi climb even though the
-    previous layer no longer needs those weights on device. A cache release at
-    the synchronous boundary keeps layer-scope memory flat without changing the
-    quantization objective.
-    """
     if not getattr(looper.gptq_model.quantize_config, "offload_to_disk", False):
         return False
-    return any(isinstance(process, ParoQuantProcessor) for process, *_ in finalize_tasks)
+    return False
 
 
 def _processor_needs_pristine_group_clone(processor) -> bool:
@@ -533,7 +515,7 @@ def run_layer_stage(
                 # Process the layer in smaller subsets so attention groups or
                 # MoE experts can be quantized independently within a layer.
                 if DEBUG_ON and log.isEnabledFor(logging.DEBUG):
-                    if isinstance(processor, (AWQProcessor, ParoQuantProcessor)):
+                    if False:
                         log.debug(
                             "StageLayer[%s]: layer=%s subset=%s/%s size=%s names=%s",
                             processor.name(),
@@ -718,7 +700,7 @@ def run_layer_stage(
                             process.submodule_finalize(module, looper.gptq_model)
 
                         # Disk offload (lifecycle TODO note preserved)
-                        if isinstance(process, (GPTQProcessor, QQQProcessor, AWQProcessor, ParoQuantProcessor)):
+                        if isinstance(process, GPTQProcessor):
                             quant_config = getattr(looper.gptq_model, "quantize_config", None)
                             if quant_config and getattr(quant_config, "offload_to_disk", False):
                                 offload_path = getattr(quant_config, "offload_to_disk_path", None)

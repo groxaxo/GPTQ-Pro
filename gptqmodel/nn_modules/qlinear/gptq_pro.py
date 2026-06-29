@@ -21,14 +21,30 @@ from ...utils.gptq_pro import (
 from ...utils.rocm import IS_ROCM
 
 
+# GPTQ-Pro is this fork's custom Ampere/Hopper Tensor-Core INT4 kernel and the
+# UNCONDITIONAL default for symmetric 4-bit FP16 GPTQ wherever it can run. Priority
+# 120 puts it above every other GPTQ-method kernel -- HFKernel/TorchAten (110,
+# CPU-only), Machete (100), Marlin (90) -- so the auto-selector always prefers it on
+# its supported config. This is a default-by-policy choice (this kernel is the fork's
+# reason to exist), NOT a benchmarked-performance claim: it is still a Tensor-Core
+# scaffold (one warp/CTA; no cp.async / ldmatrix / multi-stage pipeline; scalar INT4
+# decode) with no in-repo throughput benchmark, so it may trail Marlin/Machete on
+# batched/prefill until optimized (see K7 in docs/ASSESSMENT_AND_ROADMAP.md).
+#
+# validate_device()/_validate() still gate it to CUDA sm_80+ / Linux / FP16 / sym /
+# 4-bit / no-desc_act; for anything it cannot serve, validate() returns False (never
+# raises -- BaseQuantLinear._validate_shared catches the device check) and the
+# auto-selector falls through to the next kernel automatically. To force a different
+# kernel, request it explicitly (e.g. backend=BACKEND.MARLIN).
+_GPTQ_PRO_AUTO_PRIORITY = 120
+
+
 class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
-    # Priority 95 (above Marlin=90) so GPTQ-Pro is the first kernel tried on
-    # Ampere for symmetric 4-bit FP16 GPTQ without desc_act.  On pre-Ampere
-    # GPUs validate_device() will fail the sm_80 check and the selector falls
-    # through to Marlin automatically.
-    SUPPORTS_FORMATS = {FORMAT.GPTQ: 95, FORMAT.GPTQ_V2: 95}
+    # Priority 120 (top of the GPTQ kernel stack) so GPTQ-Pro is the unconditional
+    # auto-selection default wherever validate_device() passes. See _GPTQ_PRO_AUTO_PRIORITY.
+    SUPPORTS_FORMATS = {FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY, FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY}
     SUPPORTS_BITS = [4]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128, 256, 512, 1024]
     SUPPORTS_DESC_ACT = [False]

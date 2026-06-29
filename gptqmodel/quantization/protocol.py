@@ -9,7 +9,7 @@ from typing import Any, Mapping, Optional
 
 import pcre
 
-from .config import FORMAT, METHOD, GGUFBits, GGUFConfig, QuantizeConfig, SmoothMAD
+from .config import FORMAT, METHOD, QuantizeConfig, SmoothMAD
 
 
 @dataclass(frozen=True)
@@ -345,51 +345,17 @@ def _compile_weight_target(weight: TargetSpec, *, matchers: tuple[MatchSpec, ...
         raise ValueError("Weight target requires `weight.quantize.method`.")
 
     method = str(quantize.method).strip().lower()
-    if method == METHOD.GGUF.value:
-        return _compile_gguf_weight_target(weight, matchers=matchers)
-    if method in {METHOD.GPTQ.value, METHOD.AWQ.value}:
+    if method == METHOD.GPTQ.value:
         return _compile_quantize_config_weight_target(weight, matchers=matchers, method=METHOD(method))
     raise NotImplementedError(
-        "Initial protocol compiler supports only `weight.quantize.method` in {\"gguf\", \"gptq\", \"awq\"}."
+        "Protocol compiler only supports `weight.quantize.method = \"gptq\"`."
     )
-
-
-def _compile_gguf_weight_target(weight: TargetSpec, *, matchers: tuple[MatchSpec, ...]) -> GGUFConfig:
-    if not _supports_initial_weight_match_compilation(matchers):
-        raise NotImplementedError(
-            "Initial GGUF protocol compiler supports only `match=\"*\"` or `match=[\"*\", \"-:...\"]`."
-        )
-
-    quantize = weight.quantize
-    if quantize is None:
-        raise ValueError("GGUF weight target requires `weight.quantize`.")
-    if quantize.method != "gguf":
-        raise NotImplementedError(
-            "Initial GGUF compiler supports only `weight.quantize.method = \"gguf\"`."
-        )
-
-    bits = quantize.args.get("bits")
-    if bits is None:
-        raise ValueError("GGUF weight target requires `weight.quantize.bits`.")
-
-    export = weight.export
-    if export is not None and export.format not in {None, "gguf"}:
-        raise NotImplementedError("Initial GGUF compiler supports only `weight.export.format = \"gguf\"`.")
-
-    smoother = _compile_supported_smoother(weight.prepare)
-    gguf_format = _resolve_gguf_public_format(bits=bits, export=export)
-    dynamic = _compile_negative_match_dynamic(matchers)
-    return GGUFConfig(bits=bits, format=gguf_format, smoother=smoother, dynamic=dynamic)
 
 
 def _compile_quantize_config_weight_target(weight: TargetSpec, *, matchers: tuple[MatchSpec, ...], method: METHOD):
     if not _supports_initial_weight_match_compilation(matchers):
         raise NotImplementedError(
             f"Initial {method.value.upper()} protocol compiler supports only `match=\"*\"` or `match=[\"*\", \"-:...\"]`."
-        )
-    if weight.prepare:
-        raise NotImplementedError(
-            f"Initial {method.value.upper()} protocol compiler does not yet support `weight.prepare`."
         )
 
     quantize = weight.quantize
@@ -428,42 +394,6 @@ def _compile_quantize_config_weight_target(weight: TargetSpec, *, matchers: tupl
     return QuantizeConfig(**kwargs)
 
 
-def _compile_supported_smoother(prepare: tuple[OperationSpec, ...]) -> Optional[SmoothMAD]:
-    if not prepare:
-        return None
-    if len(prepare) != 1:
-        raise NotImplementedError("Initial GGUF compiler supports at most one weight.prepare operation.")
-
-    op = prepare[0]
-    if op.method not in {"smooth.mad", "smoother"}:
-        raise NotImplementedError(
-            "Initial GGUF compiler supports only `smooth.mad` in `weight.prepare`."
-        )
-    k = op.args.get("k")
-    if k is None:
-        smooth_payload = op.args.get("smooth")
-        if isinstance(smooth_payload, Mapping):
-            if smooth_payload.get("type") not in {None, "mad"}:
-                raise NotImplementedError("Initial GGUF compiler supports only MAD smoothers.")
-            k = smooth_payload.get("k")
-    return SmoothMAD(k=2.75 if k is None else float(k))
-
-
-def _resolve_gguf_public_format(bits: Any, export: Optional[ExportSpec]) -> Optional[str]:
-    variant = export.variant if export is not None else None
-
-    if isinstance(bits, str):
-        normalized = bits.strip().lower().replace("-", "_")
-        if normalized and not normalized.isdigit():
-            bits_spec = GGUFBits.from_string(normalized)
-            public_format = bits_spec.to_public_format()
-            if variant is not None and variant != public_format:
-                raise ValueError(
-                    f"GGUF protocol uses incompatible bits/export variant combination: bits={bits}, export.variant={variant}."
-                )
-            return variant or public_format
-
-    return variant
 
 
 def _is_global_match(matchers: tuple[MatchSpec, ...]) -> bool:
@@ -492,30 +422,9 @@ def _resolve_export_format(method: METHOD, export: Optional[ExportSpec]) -> FORM
         mapping = {
             FORMAT.GPTQ.value: FORMAT.GPTQ,
             FORMAT.GPTQ_V2.value: FORMAT.GPTQ_V2,
-            FORMAT.MARLIN.value: FORMAT.MARLIN,
-            FORMAT.BITBLAS.value: FORMAT.BITBLAS,
         }
         if variant not in mapping:
             raise NotImplementedError(f"Unsupported GPTQ export variant: `{variant}`.")
-        return mapping[variant]
-
-    if method == METHOD.AWQ:
-        if export is None:
-            return FORMAT.GEMM
-        if export.format not in {None, METHOD.AWQ.value}:
-            raise NotImplementedError("Initial AWQ compiler supports only `weight.export.format = \"awq\"`.")
-        variant = str(export.variant or FORMAT.GEMM.value).strip().lower().replace("-", "_")
-        mapping = {
-            FORMAT.GEMM.value: FORMAT.GEMM,
-            FORMAT.GEMV.value: FORMAT.GEMV,
-            FORMAT.GEMV_FAST.value: FORMAT.GEMV_FAST,
-            "gemvfast": FORMAT.GEMV_FAST,
-            FORMAT.LLM_AWQ.value.replace("-", "_"): FORMAT.LLM_AWQ,
-            FORMAT.LLM_AWQ.value: FORMAT.LLM_AWQ,
-            FORMAT.MARLIN.value: FORMAT.MARLIN,
-        }
-        if variant not in mapping:
-            raise NotImplementedError(f"Unsupported AWQ export variant: `{variant}`.")
         return mapping[variant]
 
     raise NotImplementedError(f"Unsupported export method resolution for `{method}`.")

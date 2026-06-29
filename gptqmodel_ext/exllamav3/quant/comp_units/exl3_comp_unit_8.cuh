@@ -1,3 +1,0 @@
-#pragma once
-
-ALL_EXL3_KERNEL_EXTERNS(8)

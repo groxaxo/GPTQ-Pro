@@ -99,6 +99,8 @@ TRANSFORMERS_SUPPORTS_QWEN3_5 = Version(TRANSFORMERS_VERSION) >= Version("5.2.0"
 if TRANSFORMERS_SUPPORTS_QWEN3_5:
     from .qwen3_5 import Qwen3_5QModel
     from .qwen3_5_moe import Qwen3_5_MoeQModel
+    from .qwen3_5_moe_text import Qwen3_5_MoeTextQModel
 else:
     Qwen3_5QModel = None
     Qwen3_5_MoeQModel = None
+    Qwen3_5_MoeTextQModel = None

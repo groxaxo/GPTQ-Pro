@@ -53,53 +53,6 @@ _EXTENSION_SPECS = (
         aliases=("floatx", "quant_dtype_cpu"),
         resolve=lambda: _resolve_extension_factory("gptqmodel.utils.cpp", "_floatx_cpu_extension"),
     ),
-    _ExtensionSpec(
-        name="awq",
-        aliases=(),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.awq", "_AWQ_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="qqq",
-        aliases=(),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.qqq", "_QQQ_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="exllamav2",
-        aliases=("exllama2", "exllama_v2", "exllamav2_gptq"),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.exllamav2", "_EXLLAMAV2_GPTQ_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="exllamav2_awq",
-        aliases=("exllama2_awq", "exllama_v2_awq"),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.exllamav2", "_EXLLAMAV2_AWQ_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="exllamav3",
-        aliases=("exllama3", "exllama_v3"),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.exllamav3.ext", "_EXLLAMAV3_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="machete",
-        aliases=("gptq_machete", "awq_machete"),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.machete", "_MACHETE_TORCH_OPS_EXTENSION"),
-        supported=lambda: _resolve_attr("gptqmodel.utils.machete", "_validate_machete_device_support")(),
-        unsupported_error=lambda: _resolve_attr("gptqmodel.utils.machete", "machete_runtime_error")(),
-    ),
-    _ExtensionSpec(
-        name="marlin_fp16",
-        aliases=(),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.marlin", "_MARLIN_FP16_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="marlin_bf16",
-        aliases=(),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.marlin", "_MARLIN_BF16_TORCH_OPS_EXTENSION"),
-    ),
-    _ExtensionSpec(
-        name="paroquant",
-        aliases=("paroquant_rotation",),
-        resolve=lambda: _resolve_extension_attr("gptqmodel.utils.paroquant", "_PAROQUANT_ROTATION_EXTENSION"),
-    ),
 )
 
 _EXTENSION_SPECS_BY_NAME = {spec.name: spec for spec in _EXTENSION_SPECS}

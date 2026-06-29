@@ -32,8 +32,6 @@ from transformers import PretrainedConfig
 from transformers.pytorch_utils import id_tensor_storage
 from transformers.utils.hub import cached_file
 
-from gptqmodel.nn_modules.qlinear.marlin import MarlinLinear
-
 from ..adapter.adapter import Adapter
 from ..looper.named_module import NamedModule
 from ..models._const import (
@@ -43,18 +41,10 @@ from ..models._const import (
     SUPPORTS_MODULE_TYPES,
 )
 from ..nn_modules.qlinear import BaseQuantLinear
-from ..nn_modules.qlinear.exllamav2 import ExllamaV2Linear
-from ..nn_modules.qlinear.exllamav2_awq import AwqExllamaV2Linear
 from ..quantization import FORMAT, QuantizeConfig
 from ..quantization.config import (
     FORMAT_FIELD_CODE,
     METHOD,
-    _normalize_bitsandbytes_block_size,
-    _normalize_bitsandbytes_format,
-    _normalize_fp8_fmt,
-    _normalize_fp8_scale_semantics,
-    _normalize_fp8_weight_block_size,
-    _normalize_fp8_weight_scale_method,
     _normalize_quant_bits,
     dynamic_get,
     quant_bits_width,
@@ -347,13 +337,6 @@ def make_quant(
     export_quant_method = qcfg.export_quant_method()
     backend = normalize_backend(backend, quant_method=export_quant_method)
 
-    # BitBLAS-native checkpoints can load directly. Other formats need a compatible preload kernel first.
-    if not pack and backend in [BACKEND.GPTQ_BITBLAS, BACKEND.AWQ_BITBLAS]:
-        if format in (FORMAT.GPTQ, FORMAT.GPTQ_V2):
-            backend = BACKEND.GPTQ_TORCH
-        elif qcfg.quant_method == METHOD.AWQ and format == FORMAT.GEMM:
-            backend = BACKEND.AWQ_TORCH
-
     # returns multiple validated kernels
     quant_linear_candidates = select_quant_linear(
         bits=bits,
@@ -496,47 +479,9 @@ def create_quant_module(
             tmp_sym = overrides.get("sym", sym)
             tmp_pack_dtype = overrides.get("pack_dtype", pack_dtype)
 
-            if format == FORMAT.FP8:
-                fp8_format_override = overrides.get(FORMAT_FIELD_CODE, overrides.get("fmt"))
-                if fp8_format_override is not None:
-                    tmp_init_kwargs["format"] = _normalize_fp8_fmt(fp8_format_override)
-                block_size_override = overrides.get(
-                    "weight_block_size",
-                    tmp_init_kwargs.get("weight_block_size"),
-                )
-                normalized_block_size = _normalize_fp8_weight_block_size(block_size_override)
-                if "weight_scale_method" in overrides or block_size_override is not None:
-                    tmp_init_kwargs["weight_scale_method"] = _normalize_fp8_weight_scale_method(
-                        overrides.get(
-                            "weight_scale_method",
-                            tmp_init_kwargs.get("weight_scale_method"),
-                        ),
-                        weight_block_size=normalized_block_size,
-                    )
-                if "weight_scale_semantics" in overrides:
-                    tmp_init_kwargs["weight_scale_semantics"] = _normalize_fp8_scale_semantics(
-                        overrides["weight_scale_semantics"]
-                    )
-                if "weight_block_size" in overrides:
-                    tmp_init_kwargs["weight_block_size"] = normalized_block_size
-            elif format == FORMAT.BITSANDBYTES:
-                raw_format = overrides.get(FORMAT_FIELD_CODE, overrides.get("bnb_quant_type"))
-                if raw_format is not None:
-                    tmp_init_kwargs["format"] = _normalize_bitsandbytes_format(
-                        raw_format,
-                        bits=quant_bits_width(tmp_bits),
-                    )
-                if "block_size" in overrides or "bnb_block_size" in overrides:
-                    tmp_init_kwargs["block_size"] = _normalize_bitsandbytes_block_size(
-                        overrides.get("block_size", overrides.get("bnb_block_size"))
-                    )
-                if "compress_statistics" in overrides or "bnb_compress_statistics" in overrides:
-                    tmp_init_kwargs["compress_statistics"] = bool(
-                        overrides.get("compress_statistics", overrides.get("bnb_compress_statistics"))
-                    )
 
     validate_bits = quant_bits_width(tmp_bits)
-    constructor_bits = tmp_bits if getattr(linear_cls, "QUANT_TYPE", None) == "gguf" else validate_bits
+    constructor_bits = validate_bits
 
     # when loading a quantized model, device is the target passed through the GPT-QModel load path
     # check in_features and out_features validate
@@ -633,10 +578,6 @@ def hf_convert_gptq_v1_to_v2_format(
     meta: Optional[Dict[str, any]],
 ) -> Tuple[nn.Module, bool]:
     if checkpoint_format == "gptq":
-        # skip v1 to v2 conversion for kernels that can only operate on sym=True (gptq_v1)
-        if qlinear_kernel is MarlinLinear:
-            return model, False
-
         cfg = QuantizeConfig(bits=bits)
         return convert_gptq_v1_to_v2_format(model, cfg, qlinear_kernel), True
     else:
@@ -1123,41 +1064,8 @@ def gptqmodel_post_init(model, use_act_order: bool, quantize_config: QuantizeCon
     """
     Initialize model-persistent backend scratch buffers after quantized weights are loaded.
     """
-    fixed_bytes = {}
-    model_uses_exllamav2 = False
-
-    for name, submodule in model.named_modules():
-        if isinstance(submodule, ExllamaV2Linear):
-            model_uses_exllamav2 = True
-            device = submodule.qweight.device
-            scratch_fixed = submodule.scratch_space_fixed()
-            fixed_bytes[device] = max(scratch_fixed, fixed_bytes.get(device, 0))
-        elif isinstance(submodule, AwqExllamaV2Linear):
-            model_uses_exllamav2 = True
-            device = submodule.qweight.device
-            scratch_fixed = submodule.scratch_space_fixed(
-                max_input_len=max_input_length or 2048,
-                max_batch_size=int(os.getenv("AWQ_BATCH_SIZE", 1))
-            )
-            fixed_bytes[device] = max(scratch_fixed, fixed_bytes.get(device, 0))
-
-    if model_uses_exllamav2:
-        from ..utils.exllamav2 import ScratchSpace
-
-        # we allocate a model-persistent scratch space for each device
-        device_tensors = {}
-        for device, scratch_bytes in fixed_bytes.items():
-            device_tensors[device] = ScratchSpace(scratch_bytes=scratch_bytes, dev=device)
-
-        # have persistent buffers, otherwise we will get OOM
-        model.device_tensors = device_tensors
-
-    # The buffers need to have been initialized first before calling make_q4.
     for _, submodule in model.named_modules():
-        if isinstance(submodule, (ExllamaV2Linear, AwqExllamaV2Linear)):
-            device = submodule.qweight.device
-            submodule.post_init(scratch_space=model.device_tensors[device])
-        elif isinstance(submodule, BaseQuantLinear):
+        if isinstance(submodule, BaseQuantLinear):
             submodule.post_init()
 
     torch_empty_cache()

@@ -289,9 +289,6 @@ def auto_select_device(device: Optional[DEVICE], backend: Optional[BACKEND]) -> 
     assert backend is None or isinstance(backend, BACKEND)
 
     if device is None:
-        # Backend-specific kernels should default to a compatible device class.
-        if backend in (BACKEND.GPTQ_TORCH_FUSED, BACKEND.AWQ_TORCH_FUSED, BACKEND.TORCH_FUSED, BACKEND.TORCH_FUSED_AWQ):
-            return DEVICE.XPU if HAS_XPU else DEVICE.CPU
         if HAS_CUDA:
             device = DEVICE.CUDA
         elif HAS_XPU:
@@ -386,18 +383,13 @@ def hf_select_quant_linear_v2(
     pack_dtype_override = None
     if meta is not None:
         pack_dtype_override = meta.get("pack_dtype", None)
-    # GEMV_FAST checkpoints are packed as int16; default to int32 otherwise.
-    default_pack_dtype = torch.int16 if method == METHOD.AWQ and fmt == FORMAT.GEMV_FAST else torch.int32
+    default_pack_dtype = torch.int32
     pack_dtype = _normalize_dtype(pack_dtype_override, "pack_dtype") if pack_dtype_override is not None else default_pack_dtype
 
     if device_map is not None:
         device = hf_normalize_device_device_map(None, device_map)
     else:
         device = DEVICE.CPU
-
-    if format == FORMAT.LLM_AWQ:
-        # llm-awq uses torch.int16 to pack qweight
-        pack_dtype = torch.int16
 
     effective_sym = sym
     if zero_point is not None:

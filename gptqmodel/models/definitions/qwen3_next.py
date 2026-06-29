@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
-from ...quantization import METHOD
 from ..base import BaseQModel
 from ..moe_lifecycle import GateUpDownMoELifecycleHooks
 
@@ -54,12 +53,3 @@ class Qwen3NextGPTQ(BaseQModel):
         },
     ]
 
-    module_tree_overrides = {
-        METHOD.AWQ: [
-            {
-                "mlp:moe": {
-                    "gate": ("gate",),
-                }
-            }
-        ]
-    }

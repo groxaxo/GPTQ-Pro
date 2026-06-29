@@ -36,12 +36,8 @@ except Exception:  # pragma: no cover - datasets may not be installed
 
 from .. import DEVICE_THREAD_POOL
 from ..adapter.adapter import Adapter
-from ..nn_modules.exllamav3 import ExllamaV3Linear
 from ..nn_modules.qlinear import BaseQuantLinear
-from ..nn_modules.qlinear.fp4 import TorchFP4Linear
-from ..nn_modules.qlinear.fp8 import TorchFP8Linear
 from ..nn_modules.qlinear.lookahead import configure_default_lookahead
-from ..nn_modules.qlinear.torch import TorchLinear
 from ..quantization.config import (
     FORMAT,
     METHOD,
@@ -54,12 +50,7 @@ from ..quantization.config import (
     resolve_quant_format,
 )
 from ..quantization.dtype import (
-    available_float8_dtypes,
-    dequantize_f4_e2m1,
-    dequantize_fp8,
     device_supports_dtype,
-    device_supports_native_fp4,
-    is_fp4_packed_dtype,
 )
 from ..quantization.rotation.rotation import fuse_layer_norms, rotate_model
 from ..utils.attn_mask import normalize_seq_mask
@@ -713,18 +704,7 @@ class BaseQModel(nn.Module):
 
         format_code = resolve_quant_format(self.quantize_config.format, self.quantize_config.method)
 
-        if format_code == FORMAT.MARLIN:
-            raise ValueError(
-                "FORMAT.MARLIN is deprecated for quantization. Please switch to FORMAT.GPTQ. GPTQMOdel will auto-use Marlin kernel for accelerated inference for FORMAT.GPTQ."
-            )
-
         export_quant_method = self.quantize_config.export_quant_method()
-
-        if export_quant_method == METHOD.AWQ:
-            if format_code in [FORMAT.GEMV_FAST, FORMAT.LLM_AWQ]:
-                # AWQ GEMV_FAST / LLM_AWQ only supports pack_dtype is torch.int16
-                log.info("Quantize Model: Auto fix `pack_dtype` to `torch.int16`")
-                self.quantize_config.pack_dtype = torch.int16
 
         if self.support_batch_quantize is False:
             batch_size = 1
@@ -735,57 +715,10 @@ class BaseQModel(nn.Module):
 
         preferred_backend = requested_backend
         if preferred_backend in (None, BACKEND.AUTO):
-            if export_quant_method == METHOD.AWQ:
-                if format_code == FORMAT.GEMM:
-                    # Weight-only RTN->AWQ export should stay on the portable torch kernel.
-                    preferred_backend = (
-                        BACKEND.AWQ_TORCH
-                        if self.quantize_config.uses_weight_only_lifecycle()
-                        else BACKEND.AWQ_GEMM
-                    )
-                elif format_code == FORMAT.BITBLAS:
-                    preferred_backend = BACKEND.AWQ_BITBLAS
-                elif format_code == FORMAT.GEMV:
-                    preferred_backend = BACKEND.AWQ_GEMV
-                elif format_code in [FORMAT.GEMV_FAST, FORMAT.LLM_AWQ]:
-                    preferred_backend = BACKEND.AWQ_GEMV_FAST
-                else:
-                    raise ValueError(f"Unsupported FORMAT: `{self.quantize_config.format}` with `METHOD.AWQ`")
-            elif self.quantize_config.method == METHOD.QQQ:
-                preferred_backend = BACKEND.QQQ
-            elif self.quantize_config.method == METHOD.PARO:
-                preferred_backend = BACKEND.PAROQUANT_CUDA
-            elif self.quantize_config.method == METHOD.EXL3:
-                preferred_backend = BACKEND.EXL3_EXLLAMA_V3
-            elif self.quantize_config.method == METHOD.GGUF:
-                preferred_backend = BACKEND.AUTO
-            elif self.quantize_config.method == METHOD.FP8:
-                preferred_backend = BACKEND.FP8_TORCH
-            elif self.quantize_config.method == METHOD.BITSANDBYTES:
-                preferred_backend = BACKEND.BITSANDBYTES
-            else:
-                preferred_backend = BACKEND.GPTQ_TORCH
+            preferred_backend = BACKEND.AUTO
 
-        if self.quantize_config.method == METHOD.EXL3:
-            if preferred_backend not in (BACKEND.AUTO, BACKEND.EXL3_EXLLAMA_V3):
-                raise ValueError("EXL3 quantization only supports BACKEND.AUTO or BACKEND.EXL3_EXLLAMA_V3.")
-
-            if not torch.cuda.is_available():
-                raise ValueError("EXL3 quantization requires CUDA/HIP.")
-
-            quant_device = self.quantize_config.device
-            if isinstance(quant_device, DEVICE):
-                quant_device_type = quant_device.type
-            elif isinstance(quant_device, torch.device):
-                quant_device_type = quant_device.type
-            else:
-                quant_device_type = str(quant_device).split(":")[0].lower()
-
-            if quant_device_type != "cuda":
-                raise ValueError("EXL3 quantization requires a CUDA/HIP quantization device.")
-        else:
-            # Validate quant linear before quantization starts
-            _ = select_quant_linear(
+        # Validate quant linear before quantization starts
+        _ = select_quant_linear(
                 bits=self.quantize_config.runtime_bits,
                 dynamic=self.quantize_config.dynamic,
                 group_size=self.quantize_config.group_size,
@@ -807,19 +740,11 @@ class BaseQModel(nn.Module):
                 raise ValueError(
                     f"Unsupported `tokenizer` type: Expected `PreTrainedTokenizerBase`, actual = `{type(tokenizer)}`.")
 
-        if format_code == FORMAT.BITBLAS:
-            from ..nn_modules.qlinear.bitblas import BITBLAS_AVAILABLE, BITBLAS_INSTALL_HINT
-            if BITBLAS_AVAILABLE is False:
-                raise ValueError(BITBLAS_INSTALL_HINT)
-
         # overwrite quantize_config.adapter
         if adapter is not None:
             self.quantize_config.adapter = adapter
 
-        if self.quantize_config.method == METHOD.EXL3:
-            self.qlinear_kernel = ExllamaV3Linear
-        else:
-            self.qlinear_kernel = select_quant_linear(
+        self.qlinear_kernel = select_quant_linear(
                     bits=self.quantize_config.runtime_bits,
                     group_size=self.quantize_config.group_size,
                     desc_act=self.quantize_config.desc_act,
@@ -861,29 +786,19 @@ class BaseQModel(nn.Module):
             self.model, _ = rotate_model(model=self.model, rotate_mode=self.quantize_config.rotation,
                                             device=rotation_device, **module_name_args)
 
-        if self.quantize_config.uses_weight_only_lifecycle():
-            result = self._quantize_weight_only(
-                calibration=calibration,
-                calibration_concat_size=calibration_concat_size,
-                calibration_sort=calibration_sort,
-                batch_size=batch_size,
-                backend=backend,
-                calibration_concat_separator=calibration_concat_separator,
+        if calibration is None:
+            raise ValueError(
+                "Calibration dataset is required for GPTQ quantization."
             )
-        else:
-            if calibration is None:
-                raise ValueError(
-                    "Calibration dataset is required unless a weight-only quantize config is configured."
-                )
-            result = self._quantize_with_calibration(
-                calibration=calibration,
-                calibration_concat_size=calibration_concat_size,
-                calibration_sort=calibration_sort,
-                batch_size=batch_size,
-                backend=backend,
-                adapter_calibration_dataset=adapter_calibration_dataset,
-                calibration_concat_separator=calibration_concat_separator,
-            )
+        result = self._quantize_with_calibration(
+            calibration=calibration,
+            calibration_concat_size=calibration_concat_size,
+            calibration_sort=calibration_sort,
+            batch_size=batch_size,
+            backend=backend,
+            adapter_calibration_dataset=adapter_calibration_dataset,
+            calibration_concat_separator=calibration_concat_separator,
+        )
 
         timer = getattr(self, "quant_region_timer", None)
         if timer is not None:
@@ -925,70 +840,11 @@ class BaseQModel(nn.Module):
         if getattr(self.quantize_config, "preprocessors", None):
             preprocessors.append(ModulePreProcessor(**args))
 
-        if self.quantize_config.method == METHOD.EXL3:
-            from ..looper.exllamav3_processor import EXL3Processor
+        from ..looper.gptq_processor import GPTQProcessor
 
-            if needs_lora:
-                raise NotImplementedError("EXL3 quantization does not support adapter/EoRA generation.")
-
-            if getattr(self.quantize_config, "gptaq", None) is not None:
-                raise NotImplementedError("EXL3 quantization does not support GPTAQ/native activation capture.")
-
-            if getattr(self.quantize_config, "foem", None) is not None:
-                raise NotImplementedError("EXL3 quantization does not support FOEM/native activation capture.")
-
-            exl3_args = {
-                "tokenizer": self.tokenizer,
-                "qcfg": self.quantize_config,
-                "calibration": calibration,
-                "prepare_dataset_func": self.prepare_dataset,
-                "calibration_concat_size": calibration_concat_size,
-                "calibration_sort": calibration_sort,
-                "calibration_concat_separator": calibration_concat_separator,
-                "batch_size": batch_size,
-                "lm_head_name": self.lm_head,
-            }
-            quantize_processor = preprocessors + [
-                EXL3Processor(**exl3_args),
-            ]
-        elif self.quantize_config.method == METHOD.QQQ:
-            from ..looper.qqq_processor import QQQProcessor
-
-            quantize_processor = preprocessors + [
-                QQQProcessor(**args),
-            ]
-        elif self.quantize_config.method == METHOD.AWQ:
-            from ..looper.awq_processor import AWQProcessor
-
-            os.environ["AWQ_BATCH_SIZE"] = str(batch_size)
-
-            awq_args = dict(args)
-            awq_args["gptq_model"] = self
-            awq_args["model"] = self.model
-            awq_args["batch_size"] = batch_size
-
-            quantize_processor = preprocessors + [
-                AWQProcessor(**awq_args),
-            ]
-        elif self.quantize_config.method == METHOD.PARO:
-            from ..looper.paroquant_processor import ParoQuantProcessor
-
-            os.environ["AWQ_BATCH_SIZE"] = str(batch_size)
-
-            paro_args = dict(args)
-            paro_args["gptq_model"] = self
-            paro_args["model"] = self.model
-            paro_args["batch_size"] = batch_size
-
-            quantize_processor = preprocessors + [
-                ParoQuantProcessor(**paro_args),
-            ]
-        else:
-            from ..looper.gptq_processor import GPTQProcessor
-
-            quantize_processor = preprocessors + [
-                GPTQProcessor(**args),
-            ]
+        quantize_processor = preprocessors + [
+            GPTQProcessor(**args),
+        ]
 
         if getattr(self.quantize_config, "gptaq", None) is not None:
             from ..looper.native_processor import NativeProcessor
@@ -1040,60 +896,12 @@ class BaseQModel(nn.Module):
                 fallback=self.quantize_config.fallback,
             )
 
-    def _quantize_weight_only(
-        self,
-        *,
-        calibration,
-        calibration_concat_size: Optional[int],
-        calibration_sort: Optional[str],
-        batch_size: int,
-        backend: Optional[BACKEND],
-        calibration_concat_separator: Optional[str],
-    ):
-        del calibration_concat_size, calibration_sort, batch_size, calibration_concat_separator
-
-        from ..adapter.adapter import Lora
-        from ..looper.weight_only_looper import WeightOnlyLooper
-        from ..looper.weight_only_processor import WeightOnlyProcessor
-
-        if calibration is not None:
-            log.info("Weight-only quantization selected; ignoring provided calibration dataset.")
-
-        if isinstance(self.quantize_config.adapter, Lora):
-            raise NotImplementedError(
-                "Weight-only quantization does not support adapter/EoRA generation."
-            )
-
-        if getattr(self.quantize_config, "gptaq", None) is not None:
-            raise NotImplementedError(
-                "Weight-only quantization does not support GPTAQ/native activation capture."
-            )
-
-        if getattr(self.quantize_config, "foem", None) is not None:
-            raise NotImplementedError(
-                "Weight-only quantization does not support FOEM/native activation capture."
-            )
-
-        processor = WeightOnlyProcessor(
-            tokenizer=self.tokenizer,
-            qcfg=self.quantize_config,
-        )
-        module_looper = WeightOnlyLooper(model=self, processor=processor)
-
-        gc_context = (
-            DEVICE_THREAD_POOL.no_auto_gc()
-            if self.quantize_config.gc_mode == GcMode.ON_STAGE_END
-            else nullcontext()
-        )
-
-        with gc_context:
-            return module_looper.loop(backend=backend)
 
     def _eora_generate(
         self,
         # eora adapter generation needs config Lora(rank=1, path='lora.safetensors')
         adapter: Adapter,
-        quantized_modules: Dict[str, TorchLinear],
+        quantized_modules: Dict,
         calibration_dataset: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int]],
         calibration_dataset_concat_size: Optional[int] = None,
         calibration_dataset_sort: Optional[str] = None,
@@ -1530,14 +1338,7 @@ class BaseQModel(nn.Module):
         if not isinstance(self.model, nn.Module):
             return
 
-        quant_modules = [module for module in self.model.modules() if isinstance(module, TorchLinear)]
-        if not quant_modules:
-            return
-
-        if not any(getattr(module, "_lookahead_enabled", False) for module in quant_modules):
-            return
-
-        configure_default_lookahead(self.model)
+        pass
 
     def compile(self, backend: str = "inductor", mode: str = None, fullgraph: bool = False):
         log.warn("Deprecation: `model.compile()` is deprecated. Please use `model.optimize()` instead.")
@@ -2782,10 +2583,10 @@ class BaseQModel(nn.Module):
     def _auto_detect_module_tree(self, model: PreTrainedModel, quant_method: METHOD):
         log.warn("Model not yet support, attempting Module Tree AutoCompat...")
 
-        if quant_method not in {METHOD.GPTQ, METHOD.GGUF, METHOD.FP8, METHOD.BITSANDBYTES, METHOD.EXL3, METHOD.PARO}:
+        if quant_method not in {METHOD.GPTQ}:
             log.warn(
                 f"Module Tree AutoCompat: Failed, quant_method={quant_method}, "
-                "only support GPTQ/GGUF/FP8/BITSANDBYTES/EXL3/PAROQUANT"
+                "only support GPTQ"
             )
             return None
 

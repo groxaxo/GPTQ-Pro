@@ -1,88 +1,109 @@
 # GPTQ-Pro
 
 **GPTQ-Pro** is an experimental, performance-focused fork of
-[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel), tuned for practical local quantization and inference work on modern NVIDIA consumer GPUs, especially Ampere-class cards such as the RTX 3090 and RTX 3060.
+[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel), built around a single
+quantization path: a custom GPTQ INT4 CUDA kernel tuned for Ampere-class NVIDIA GPUs
+(RTX 3090, RTX 3060, A100 — `sm_80`/`sm_86`/`sm_87`).
 
-This project keeps the excellent GPT-QModel foundation intact, while adding a GPTQ-Pro research path around INT4 kernels, activation-aware quantization improvements, Ampere CUDA compatibility, Qwen-family workflows, vLLM serving helpers, and local validation tooling.
+All other backends (AWQ, Marlin, ExllamaV2/V3, BitBLAS, Machete, QQQ, BitsAndBytes,
+GGUF, FP8, RTN, VLLM, SGLang, MLX) have been removed. GPTQ-Pro is the only inference
+and quantization path.
 
 > This is not the official ModelCloud release.  
-> For stable upstream usage, use [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel).  
-> This fork is for GPTQ-Pro experimentation, local benchmarking, kernel validation, and practical model-quantization workflows.
+> For stable upstream usage, use [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel).
+
+> 📋 See [`docs/ASSESSMENT_AND_ROADMAP.md`](docs/ASSESSMENT_AND_ROADMAP.md) for a fact-checked
+> assessment of current quantization quality and a prioritized, Ampere-focused improvement roadmap.
 
 ---
 
-## Credits
+## What this fork is
 
-This fork exists because the upstream work is already strong.
+A stripped-down, single-backend research build with three goals:
 
-Massive credit to **Qubitium** and the **ModelCloud team** for building and maintaining GPT-QModel, one of the most complete modern GPTQ/AWQ/LLM quantization toolkits available.
-
-Additional credit to:
-
-- **Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh** for the original GPTQ and Marlin work.
-- **PanQiWei** for AutoGPTQ, which GPT-QModel is historically based on.
-- **FXMarty** for maintaining and supporting AutoGPTQ.
-- **Qwopqwop200** for GPTQ-for-LLaMa quantization work.
-- **Turboderp** for ExLlama / ExLlamaV2 kernels.
-- **FpgaMiner** for GPTQ-Triton kernels.
-- **Casper Hansen** for AutoAWQ, which helped shape early AWQ integration.
-
-GPTQ-Pro is a fork, not a reinvention. The upstream authors did the hard foundational engineering. This branch adds a more aggressive local-performance research track on top.
+1. **Clean kernel development surface** — one CUDA kernel to optimize, no multi-backend
+   branching in hot paths.
+2. **Maximum quantization quality** — the full GPTQ quality toolbox is available and
+   documented: act-order (GAR), activation-weighted MSE scale search, GPTAQ error feedback,
+   FOEM 1st-order error minimization, Hadamard incoherence rotation, and adaptive Cholesky
+   damping.
+3. **Ampere-first** — build flags, kernel design, and validation are all centered on
+   `sm_80`/`sm_86`/`sm_87` consumer and datacenter cards.
 
 ---
 
-## What GPTQ-Pro adds
+## Supported formats and backends
 
-GPTQ-Pro focuses on the parts that matter when you are actually quantizing and serving models on local hardware:
-
-- **GPTQ-Pro INT4 dequant GEMM path**
-- **FP32-accumulator GPTQ-Pro kernel work**
-- **Activation-weighted GPTQ-Pro scale search**
-- **Adaptive GPTQ-Pro smoothing / failsafe logic**
-- **Qwen3.5 quantization, smoke tests, benchmark notes, and vLLM workflows**
-- **Local inference wiring for GPTQ-Pro**
-- **Gemma 4 GPTQ package validation**
-- **RTX 3090 / RTX 3060 Ampere validation**
-- **Ampere-focused CUDA build flags for `sm_80`, `sm_86`, and `sm_87`**
-- **PTX fallback gencode for better forward compatibility**
-- **GPTQ-only quantization restrictions where mixed paths are unsafe**
-- **Validation harnesses and regression tests for the experimental path**
-
-The intent is simple: make GPTQ-Pro more useful for people running serious local LLM infrastructure, not just clean-room benchmark demos.
+| Dimension | Values |
+|-----------|--------|
+| **FORMAT** | `GPTQ`, `GPTQ_V2` |
+| **METHOD** | `GPTQ` |
+| **BACKEND** | `AUTO`, `AUTO_TRAINABLE`, `GPTQ_PRO` |
 
 ---
 
-## Tested / targeted hardware
+## GPTQ-Pro kernel
 
-This fork is primarily developed around local NVIDIA Ampere hardware:
+`gptqmodel_ext/gptq_pro/` — custom Ampere INT4 dequant GEMM:
 
-- RTX 3090
-- RTX 3060
-- CUDA `sm_86`
-- Multi-GPU local quantization and inference workflows
+- `mma.sync` FP32 accumulation on Tensor Cores
+- Symmetric INT4 weight packing (4-bit nibble, group-based scales)
+- Priority 120 — always selected over any fallback
 
-Other CUDA GPUs may work, especially where upstream GPT-QModel already supports them, but the GPTQ-Pro path is optimized and validated first against Ampere-class consumer cards.
+Current state is a performance scaffold (one warp/CTA, no `cp.async` pipeline, no GEMV
+decode path). See the roadmap doc for the planned improvements.
 
 ---
 
-## Relationship to GPT-QModel
+## Quantization quality levers
 
-GPTQ-Pro inherits the core GPT-QModel feature surface, including support for:
+All levers are optional and composable on top of plain GPTQ:
 
-- GPTQ
-- AWQ
-- Marlin
-- vLLM
-- SGLang
-- Hugging Face Transformers
-- CPU / CUDA / ROCm / XPU paths where supported upstream
-- Modern model-family support inherited from GPT-QModel
+| Feature | Config field | What it does |
+|---------|-------------|--------------|
+| Act-order / GAR | `act_group_aware` | Reorder columns by activation magnitude before grouping |
+| MSE scale search | `mse` | Search for optimal per-group scale (0 = off, ~2.0 = recommended) |
+| Activation-weighted MSE | `activation_weighted_mse` | Weight scale search by calibration activations |
+| GPTAQ | `gptaq` | Activation-error feedback after each layer |
+| FOEM | `foem` | 1st-order error minimization pass |
+| Hadamard rotation | `rotation="hadamard"` | Incoherence processing for ≤3-bit |
+| Adaptive damping | `damp_percent` | Cholesky regularization |
 
-This fork does **not** try to replace GPT-QModel. It keeps GPT-QModel as the base and layers experimental GPTQ-Pro improvements on top.
+A `max_quality` preset that enables all of the above is available:
 
-Use upstream GPT-QModel when you want the most stable general-purpose package.
+```python
+from gptqmodel import GPTQModel, QuantizeConfig
 
-Use GPTQ-Pro when you want to test the experimental path, especially around local CUDA kernels, Ampere hardware, Qwen-family workflows, and custom quantization validation.
+qcfg = QuantizeConfig.max_quality(bits=4, group_size=128)
+model = GPTQModel.load("meta-llama/Llama-3.1-8B", quantize_config=qcfg)
+model.quantize(calibration_dataset)
+model.save("Llama-3.1-8B-GPTQ-Pro-4bit")
+```
+
+---
+
+## Supported models
+
+All model families from the GPTQModel foundation are supported, including:
+
+- **Qwen3 / Qwen3.5 / Qwen3.5-MoE** (including multimodal vision)
+- **LLaMA 3.x / LLaMA 4**
+- **Gemma 2 / Gemma 3 / Gemma 4**
+- **Mistral / Mixtral**
+- **Phi-3 / Phi-4**
+- **DeepSeek-V2 / DeepSeek-V3**
+- **OLMo / OLMoE**
+- And many others — see `gptqmodel/models/definitions/`
+
+---
+
+## Tested hardware
+
+Primary development and validation targets:
+
+- RTX 3090 (`sm_86`)
+- RTX 3060 (`sm_86`)
+- A100 (`sm_80`)
 
 ---
 
@@ -97,3 +118,19 @@ source .venv/bin/activate
 
 pip install --upgrade pip wheel setuptools
 pip install -e .
+```
+
+---
+
+## Credits
+
+Massive credit to **Qubitium** and the **ModelCloud team** for building and maintaining
+GPT-QModel, and to the original GPTQ authors:
+
+- **Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh** — GPTQ
+- **PanQiWei** — AutoGPTQ (GPT-QModel's historical foundation)
+- **FXMarty** — AutoGPTQ maintenance
+- **Qwopqwop200** — GPTQ-for-LLaMa
+
+GPTQ-Pro is a fork, not a reinvention. The upstream authors did the hard foundational
+engineering. This branch strips the build down to a single kernel research track.

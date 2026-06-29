@@ -56,10 +56,7 @@ from ..utils.offload import offload_to_disk
 from ..utils.python import has_gil_control, has_gil_disabled
 from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard)
 from .. import DEVICE_THREAD_POOL
-from .awq_processor import AWQProcessor
 from .forward_executor import ForwardExecutor
-from .paroquant_processor import ParoQuantProcessor
-from .qqq_processor import QQQProcessor
 from .stage_inputs_capture import StageInputsCapture
 from .stage_layer import run_layer_stage
 
@@ -83,19 +80,7 @@ class FinalizeProgressInfo(NamedTuple):
 def _restrict_quant_devices_for_method(method: Any, quant_devices: List[torch.device]) -> List[torch.device]:
     """Apply method-specific device constraints for quantization workers."""
 
-    try:
-        normalized_method = METHOD(method) if method is not None else None
-    except (TypeError, ValueError):
-        normalized_method = None
-
-    if normalized_method != METHOD.PARO or not quant_devices:
-        return quant_devices
-
-    non_cpu_devices = [device for device in quant_devices if getattr(device, "type", None) != "cpu"]
-    if non_cpu_devices:
-        return [non_cpu_devices[0]]
-
-    return quant_devices[:1]
+    return quant_devices
 
 
 def _resolve_strategy_device_pool(
@@ -1444,16 +1429,10 @@ class ModuleLooper():
                 disk_path=self.gptq_model.quantize_config.offload_to_disk_path
             )
 
-        for processor in self.processors:
-            # Pre-build ParoQuant's optional fused rotation extension before the
-            # first timed layer so layer 0 does not absorb a one-time JIT cost.
-            if isinstance(processor, ParoQuantProcessor):
-                processor.prewarm_runtime()
-
         if region_timer is not None:
             region_timer.flush()
 
-        is_awq_quantize = any(isinstance(proc, (AWQProcessor, ParoQuantProcessor)) for proc in self.processors)
+        is_awq_quantize = False
         # Capture-only layer groups are driven by processor execution config,
         # not by ad-hoc processor attributes.
         requires_activation_capture = any(

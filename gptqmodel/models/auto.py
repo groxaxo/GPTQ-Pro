@@ -56,13 +56,10 @@ from transformers import AutoConfig, PreTrainedTokenizerBase  # noqa: E402
 from transformers import __version__ as TRANSFORMERS_VERSION
 
 from ..adapter.adapter import Adapter, Lora, normalize_adapter  # noqa: E402
-from ..nn_modules.qlinear.torch import TorchLinear  # noqa: E402
 from ..quantization import METHOD, QUANT_CONFIG_FILENAME, QuantizeConfig  # noqa: E402
 from ..utils import BACKEND, PROFILE  # noqa: E402
 from ..utils.backend import normalize_backend, normalize_profile  # noqa: E402
 from ..utils.hf import (  # noqa: E402
-    get_hf_gguf_load_kwargs,
-    normalize_model_id_or_path_for_hf_gguf,
     normalize_torch_dtype_kwarg,
     resolve_trust_remote_code,
 )
@@ -159,9 +156,11 @@ TRANSFORMERS_SUPPORTS_QWEN3_5 = Version(TRANSFORMERS_VERSION) >= Version("5.2.0"
 if TRANSFORMERS_SUPPORTS_QWEN3_5:
     from .definitions.qwen3_5 import Qwen3_5QModel  # noqa: E402
     from .definitions.qwen3_5_moe import Qwen3_5_MoeQModel  # noqa: E402
+    from .definitions.qwen3_5_moe_text import Qwen3_5_MoeTextQModel  # noqa: E402
 else:
     Qwen3_5QModel = None
     Qwen3_5_MoeQModel = None
+    Qwen3_5_MoeTextQModel = None
 
 
 MODEL_MAP = {
@@ -280,6 +279,11 @@ if Qwen3_5QModel is not None:
 if Qwen3_5_MoeQModel is not None:
     MODEL_MAP["qwen3_5_moe"] = Qwen3_5_MoeQModel
 
+if Qwen3_5_MoeTextQModel is not None:
+    # text-only Qwen3.5-MoE (Qwen3_5MoeForCausalLM); model.* layout, no processor.
+    # NOT the multimodal model.language_model.* layout above.
+    MODEL_MAP["qwen3_5_moe_text"] = Qwen3_5_MoeTextQModel
+
 SUPPORTED_MODELS = list(MODEL_MAP.keys())
 
 
@@ -328,29 +332,11 @@ def _is_supported_quantization_config(config: AutoConfig) -> bool:
         )
 
     quant_format = quantization_config.get("quant_format")
-    if isinstance(quant_format, str) and quant_format.lower() in (
-        METHOD.GPTQ,
-        METHOD.GGUF,
-        METHOD.FP8,
-        METHOD.BITSANDBYTES,
-        METHOD.AWQ,
-        METHOD.PARO,
-        METHOD.QQQ,
-        METHOD.EXL3,
-    ):
+    if isinstance(quant_format, str) and quant_format.lower() in (METHOD.GPTQ.value,):
         return True
 
     method = quantization_config.get("method", quantization_config.get("quant_method"))
-    if isinstance(method, str) and method.lower() in (
-        METHOD.GPTQ,
-        METHOD.GGUF,
-        METHOD.FP8,
-        METHOD.BITSANDBYTES,
-        METHOD.AWQ,
-        METHOD.PARO,
-        METHOD.QQQ,
-        METHOD.EXL3,
-    ):
+    if isinstance(method, str) and method.lower() in (METHOD.GPTQ.value, "gptqmodel"):
         return True
 
     return False
@@ -392,16 +378,10 @@ def _hide_unsupported_quantization_config_for_lm_eval(model):
 
 
 def _get_config_load_kwargs(kwargs: dict) -> dict:
-    return get_hf_gguf_load_kwargs(kwargs)
+    return {}
 
 
 def check_and_get_model_definition(model_dir, trust_remote_code=False, **config_load_kwargs):
-    if "gguf_file" not in config_load_kwargs:
-        model_dir = normalize_model_id_or_path_for_hf_gguf(
-            model_dir,
-            config_load_kwargs,
-            api_name="check_and_get_model_definition",
-        )
     trust_remote_code = resolve_trust_remote_code(model_dir, trust_remote_code=trust_remote_code)
     config = AutoConfig.from_pretrained(model_dir, trust_remote_code=trust_remote_code, **config_load_kwargs)
     model_type = config.model_type.lower()
@@ -433,11 +413,6 @@ class GPTQModel:
             trust_remote_code: bool = False,
             **kwargs,
     ):
-        model_id_or_path = normalize_model_id_or_path_for_hf_gguf(
-            model_id_or_path,
-            kwargs,
-            api_name="GPTQModel.load",
-        )
         if isinstance(model_id_or_path, str):
             model_id_or_path = model_id_or_path.strip()
         requested_trust_remote_code = trust_remote_code
@@ -520,11 +495,6 @@ class GPTQModel:
             trust_remote_code: bool = False,
             **model_init_kwargs,
     ) -> BaseQModel:
-        model_id_or_path = normalize_model_id_or_path_for_hf_gguf(
-            model_id_or_path,
-            model_init_kwargs,
-            api_name="GPTQModel.from_pretrained",
-        )
         normalize_torch_dtype_kwarg(
             model_init_kwargs,
             api_name="GPTQModel.from_pretrained",
@@ -579,11 +549,6 @@ class GPTQModel:
             trust_remote_code: bool = False,
             **kwargs,
     ) -> BaseQModel:
-        model_id_or_path = normalize_model_id_or_path_for_hf_gguf(
-            model_id_or_path,
-            kwargs,
-            api_name="GPTQModel.from_quantized",
-        )
         normalize_torch_dtype_kwarg(
             kwargs,
             api_name="GPTQModel.from_quantized",
@@ -616,58 +581,7 @@ class GPTQModel:
 
     @staticmethod
     def export(model_id_or_path: str, target_path: str, format: str, trust_remote_code: bool = False):
-        trust_remote_code = resolve_trust_remote_code(model_id_or_path, trust_remote_code=trust_remote_code)
-        # load config
-        config = AutoConfig.from_pretrained(model_id_or_path, trust_remote_code=trust_remote_code)
-
-        if not config.quantization_config:
-            raise ValueError("Model is not quantized")
-
-        gptq_config = config.quantization_config
-
-        method = gptq_config.get("method", gptq_config.get("quant_method", ""))
-        normalized_method = str(method).lower()
-        if normalized_method == METHOD.GGUF.value:
-            backend = BACKEND.GGUF_TORCH
-        elif normalized_method == METHOD.BITSANDBYTES.value:
-            backend = BACKEND.BITSANDBYTES
-        elif normalized_method == METHOD.AWQ.value:
-            backend = BACKEND.AWQ_TORCH
-        elif normalized_method == METHOD.PARO.value:
-            backend = BACKEND.PAROQUANT_CUDA
-        elif normalized_method == METHOD.FP8.value:
-            backend = BACKEND.FP8_TORCH
-        elif normalized_method == METHOD.EXL3.value:
-            backend = BACKEND.EXL3_TORCH
-        else:
-            backend = BACKEND.GPTQ_TORCH
-
-        # load gptq model
-        gptq_model = GPTQModel.load(model_id_or_path, backend=backend)
-
-        if format == "mlx":
-            try:
-                from mlx_lm.utils import save_config, save_model
-
-                from ..utils.mlx import convert_gptq_to_mlx_weights
-            except ImportError:
-                raise ValueError(
-                    "MLX not installed. Please install via `pip install gptqmodel[mlx] --no-build-isolation`.")
-
-            mlx_weights, mlx_config = convert_gptq_to_mlx_weights(model_id_or_path, gptq_model, gptq_config,
-                                                                  gptq_model.lm_head)
-
-            save_model(target_path, mlx_weights, donate_model=True)
-
-            save_config(mlx_config, config_path=target_path + "/config.json")
-        elif format == "hf":
-            from ..nn_modules.qlinear.torch import dequantize_model
-
-            dequantized_model = dequantize_model(gptq_model.model)
-            dequantized_model.save_pretrained(target_path)
-
-        # save tokenizer to target path
-        gptq_model.tokenizer.save_pretrained(target_path)
+        raise NotImplementedError("GPTQModel.export() is not supported in this build.")
 
     class adapter:
         @classmethod
@@ -695,16 +609,15 @@ class GPTQModel:
             log.info("Model: Quant Model Loading...")
             quantized_model = GPTQModel.load(
                 model_id_or_path=quantized_model_id_or_path,
-                backend=BACKEND.GPTQ_TORCH,
+                backend=BACKEND.AUTO,
                 device=CPU,
                 trust_remote_code=trust_remote_code,
                 dtype=dtype,
             )
 
             qcfg = quantized_model.quantize_config
-            qModules: Dict[str, TorchLinear] = find_modules(module=quantized_model.model, layers=[TorchLinear])
-            # for name, module in qModules.items():
-            #     quantized_weights[name] = module.dequantize_weight()
+            from ..nn_modules.qlinear.gptq_pro import GPTQProLinear
+            qModules = find_modules(module=quantized_model.model, layers=[GPTQProLinear])
             del quantized_model
             torch_empty_cache()
 
@@ -712,7 +625,7 @@ class GPTQModel:
             model = GPTQModel.load(
                 model_id_or_path=model_id_or_path,
                 quantize_config=qcfg,
-                backend=BACKEND.GPTQ_TORCH,
+                backend=BACKEND.AUTO,
                 trust_remote_code=trust_remote_code,
                 dtype=dtype,
                 device=CPU,
