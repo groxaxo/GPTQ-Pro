@@ -1,3 +1,0 @@
-numba
-tbb
-auto-round-lib
