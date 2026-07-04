@@ -1151,6 +1151,7 @@ def build_shell_model(
 
     del init_kwargs["device_map"]
     del init_kwargs["_fast_init"]
+    init_kwargs.pop("profile", None)
     # All nn.Parameters and buffers are created
 
     normalize_hf_config_compat(config, trust_remote_code=trust_remote_code)

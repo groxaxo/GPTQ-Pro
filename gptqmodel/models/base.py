@@ -711,7 +711,7 @@ class BaseQModel(nn.Module):
             log.warn("Batch quantization is not supported for this model. Setting batch_size to 1.")
 
         requested_backend = backend
-        requested_backend = normalize_backend(requested_backend, quant_method=export_quant_method)
+        requested_backend = normalize_backend(requested_backend)
 
         preferred_backend = requested_backend
         if preferred_backend in (None, BACKEND.AUTO):

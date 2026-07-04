@@ -77,7 +77,7 @@ def get_kernel_backends(cls: Type[BaseQuantLinear]) -> List[BACKEND]:
 
 
 def get_kernel_for_backend(backend: BACKEND, quant_method: METHOD, fmt: FORMAT) -> Type[BaseQuantLinear]:
-    backend = normalize_backend(backend, quant_method=quant_method)
+    backend = normalize_backend(backend)
     matches = []
     for cls in iter_quant_linear_kernels():
         if backend not in get_kernel_backends(cls):
@@ -313,7 +313,7 @@ def hf_select_quant_linear(
         backend: Optional[Union[str, BACKEND]] = None,
 ) -> Type[BaseQuantLinear]:
     # convert hf string backend to backend.enum
-    backend = normalize_backend(backend, quant_method=METHOD.GPTQ)
+    backend = normalize_backend(backend)
 
     if device_map is not None:
         device = hf_normalize_device_device_map(None, device_map)
@@ -352,7 +352,7 @@ def hf_select_quant_linear_v2(
         backend: Optional[Union[str, BACKEND]] = None,
 ) -> Type[BaseQuantLinear]:
     # convert hf string backend to backend.enum
-    backend = normalize_backend(backend, quant_method=quant_method)
+    backend = normalize_backend(backend)
 
     def _normalize_enum(value, enum_cls, field: str):
         if isinstance(value, enum_cls):
@@ -435,7 +435,7 @@ def select_quant_linear(
         format = FORMAT(format.lower())
     if isinstance(quant_method, str):
         quant_method = METHOD(quant_method.lower())
-    backend = normalize_backend(backend, quant_method=quant_method)
+    backend = normalize_backend(backend)
 
     bits = quant_bits_width(_normalize_quant_bits(bits, format_value=format))
 

@@ -549,7 +549,7 @@ def ModelLoader(cls):
         qcfg = QuantizeConfig.from_pretrained(model_local_path, **cached_file_kwargs, **kwargs_without_internal)
         export_quant_method = qcfg.export_quant_method()
         format_code = resolve_quant_format(qcfg.format, qcfg.method)
-        backend = normalize_backend(backend, quant_method=export_quant_method)
+        backend = normalize_backend(backend)
 
         if backend == BACKEND.GPTQ_PRO:
             log.info("Loading Quantized Model: Auto fix `dtype` to `torch.float16`")

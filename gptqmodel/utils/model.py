@@ -335,7 +335,7 @@ def make_quant(
     init_kwargs = qcfg.quant_linear_init_kwargs()
 
     export_quant_method = qcfg.export_quant_method()
-    backend = normalize_backend(backend, quant_method=export_quant_method)
+    backend = normalize_backend(backend)
 
     # returns multiple validated kernels
     quant_linear_candidates = select_quant_linear(
