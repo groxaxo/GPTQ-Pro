@@ -155,11 +155,15 @@ from .definitions.xverse import XverseQModel  # noqa: E402
 TRANSFORMERS_SUPPORTS_QWEN3_5 = Version(TRANSFORMERS_VERSION) >= Version("5.2.0")
 if TRANSFORMERS_SUPPORTS_QWEN3_5:
     from .definitions.qwen3_5 import Qwen3_5QModel  # noqa: E402
+    from .definitions.qwen3_5_text import Qwen3_5TextQModel  # noqa: E402
     from .definitions.qwen3_5_moe import Qwen3_5_MoeQModel  # noqa: E402
+    from .definitions.qwen3_5_moe_lm_only import Qwen3_5_MoeLanguageModelOnlyQModel  # noqa: E402
     from .definitions.qwen3_5_moe_text import Qwen3_5_MoeTextQModel  # noqa: E402
 else:
     Qwen3_5QModel = None
+    Qwen3_5TextQModel = None
     Qwen3_5_MoeQModel = None
+    Qwen3_5_MoeLanguageModelOnlyQModel = None
     Qwen3_5_MoeTextQModel = None
 
 
@@ -274,7 +278,11 @@ MODEL_MAP = {
 
 if Qwen3_5QModel is not None:
     MODEL_MAP["qwen3_5"] = Qwen3_5QModel
-    MODEL_MAP["qwen3_5_text"] = Qwen3_5QModel
+
+if Qwen3_5TextQModel is not None:
+    # flat text-only Qwen3.5 dense (Qwen3_5ForCausalLM); model.* layout, no processor.
+    # NOT the multimodal model.language_model.* layout used by "qwen3_5" above.
+    MODEL_MAP["qwen3_5_text"] = Qwen3_5TextQModel
 
 if Qwen3_5_MoeQModel is not None:
     MODEL_MAP["qwen3_5_moe"] = Qwen3_5_MoeQModel
@@ -389,6 +397,17 @@ def check_and_get_model_definition(model_dir, trust_remote_code=False, **config_
     # if model_type is not supported, use BaseQModel, will use auto_detect_module_tree to generate module tree
     if model_type not in SUPPORTED_MODELS:
         return BaseQModel
+
+    # Qwen3.5-MoE ships a single top-level model_type ("qwen3_5_moe") for both the true multimodal
+    # checkpoint and the language-model-only variant (architectures is ConditionalGeneration in both
+    # cases). Only config.language_model_only distinguishes them. Route the LM-only variant to the
+    # class that never quantizes/saves the (randomly-initialized) vision tower transformers builds.
+    if (
+        model_type == "qwen3_5_moe"
+        and getattr(config, "language_model_only", False)
+        and Qwen3_5_MoeLanguageModelOnlyQModel is not None
+    ):
+        return Qwen3_5_MoeLanguageModelOnlyQModel
 
     return MODEL_MAP[model_type]
 
