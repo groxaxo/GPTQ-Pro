@@ -14,6 +14,13 @@ Usage:
   CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \\
       --model /path/to/bf16/source --out /path/to/output \\
       --preset quality --nsample 64 --seqlen 512 --offload-disk --dry-run
+
+  # Selective/mixed-precision: preserve the same modules bf16 that an AWQ
+  # recipe's ignore-list identified as sensitive, via QuantizeConfig.dynamic:
+  CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \\
+      --model /path/to/bf16/source --out /path/to/output \\
+      --preset quality --nsample 64 --seqlen 512 --offload-disk \\
+      --dynamic-ignore-json /path/to/modules_to_not_convert.generated.json
 """
 from __future__ import annotations
 

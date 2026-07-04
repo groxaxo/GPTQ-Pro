@@ -97,6 +97,29 @@ All model families from the GPTQModel foundation are supported, including:
 
 ---
 
+## Mixed-precision / selective quantization
+
+`QuantizeConfig.dynamic` accepts a dict of PCRE-pattern overrides, keyed by module-name pattern.
+A `-:` prefix means "skip quantization for any module matching this pattern", regardless of what
+the model's own `module_tree` marks as quantizable — the layer walker checks `dynamic` first
+(`gptqmodel/utils/model.py`: `if overrides == False: return`), so a `-:` match always wins.
+
+```python
+qcfg = QuantizeConfig(bits=4, group_size=128)
+qcfg.dynamic = {
+    "-:^model\\.embed_tokens$": {},
+    "-:^lm_head$": {},
+    "-:^model\\.layers\\.0\\.input_layernorm$": {},
+}
+```
+
+`scripts/quant_qwen36_obliterated_gptqpro.py --dynamic-ignore-json <path>` builds this dict
+automatically from a `{"modules_to_not_convert": [...]}`-shaped file — the same shape used by
+selective AWQ/AutoRound recipes — so a bf16-preservation list built for one quantization method
+can be reused as-is for GPTQ-Pro.
+
+---
+
 ## Tested hardware
 
 Primary development and validation targets:
