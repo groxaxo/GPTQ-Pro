@@ -86,7 +86,7 @@ model.save("Llama-3.1-8B-GPTQ-Pro-4bit")
 
 All model families from the GPTQModel foundation are supported, including:
 
-- **Qwen3 / Qwen3.5 / Qwen3.5-MoE** (including multimodal vision)
+- **Qwen3 / Qwen3.5 / Qwen3.5-MoE** (dense + MoE, multimodal vision, and flat text-only `qwen3_5_text` / `qwen3_5_moe_text` checkpoints)
 - **LLaMA 3.x / LLaMA 4**
 - **Gemma 2 / Gemma 3 / Gemma 4**
 - **Mistral / Mixtral**
