@@ -32,7 +32,7 @@ SUPPORTED_MODEL_TYPES = {
 MTP_CONFIG_KEYS = {
     "mtp_num_hidden_layers",
     "num_nextn_predict_layers",
-    "num_nextn_predict_layers",
+    "num_next_n_predict_layers",
 }
 AUXILIARY_NAME_MARKERS = (
     "mtp",
