@@ -5,19 +5,24 @@
 from transformers import AutoModelForImageTextToText
 from transformers.models.qwen3_5 import Qwen3_5TextConfig
 
+from ...utils.model import MODALITY
 from . import LlamaQModel
+from ._qwen3_5_vision import Qwen3_5VisionMixin
 
 
-class Qwen3_5QModel(LlamaQModel):
-    """
-    Qwen3_5 inherits the Llama-style layout but inserts Q/K RMS norm layers
-    ahead of the attention projections. We mark those helper modules as
-    non-quantized so the layer walker captures the complete structure.
+class Qwen3_5QModel(Qwen3_5VisionMixin, LlamaQModel):
+    """Multimodal dense Qwen3.5/Qwen3.6 quantization definition.
+
+    Qwen3.5 inherits the Llama-style projection layout but alternates linear
+    attention and full attention. The shared vision mixin materializes the
+    vision tower for multimodal calibration while keeping it out of the
+    quantization tree and in source precision.
     """
 
     config_class = Qwen3_5TextConfig
     loader = AutoModelForImageTextToText
     require_load_processor = True
+    modality = [MODALITY.TEXT, MODALITY.IMAGE_TO_TEXT]
 
     # Transformers' Qwen3.5 SDPA path currently errors when calibration batches
     # contain multiple padded samples, so quantization must stay single-sample.
