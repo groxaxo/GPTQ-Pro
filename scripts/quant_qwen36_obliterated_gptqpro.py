@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
-"""GPTQ-Pro quantization for OBLITERATUS/Qwen3.6-27B-OBLITERATED (text-only, dense
-qwen3_5_text - no vision, no MTP tensors in this checkpoint, verified via
-detect_mtp_aux() below rather than assumed).
+"""Quantize a flat text-only Qwen3.5/Qwen3.6 dense checkpoint with GPTQ-Pro.
 
-Single visible GPU + disk-offload, per this repo's own documented recovery path
-(see quant_qwen3_5_moe.py docstring): multi-GPU calibration can replicate layers
-across cards and OOM on <=24GB cards. This script hard-fails if more than one
-CUDA device is visible rather than silently falling back to a Transformers-side
-device_map - GPTQ-Pro's own ModuleLooper/QuantizeConfig controls placement, not
-device_map="auto"/"balanced".
+Official Qwen3.6 checkpoints intentionally reuse the Qwen3.5 Transformers
+architecture and model types. This driver is for converted/derived checkpoints
+whose top-level ``model_type`` is ``qwen3_5_text``; multimodal ``qwen3_5`` and
+MoE ``qwen3_5_moe*`` checkpoints should use their corresponding drivers.
 
-Usage:
-  CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \\
-      --model /path/to/bf16/source --out /path/to/output \\
-      --preset quality --nsample 64 --seqlen 512 --offload-disk --dry-run
+The safe low-VRAM path keeps exactly one CUDA device visible and lets
+GPTQ-Pro's own module looper perform disk offload. A dry run validates the
+architecture and placement without starting quantization.
 
-  # Selective/mixed-precision: preserve the same modules bf16 that an AWQ
-  # recipe's ignore-list identified as sensitive, via QuantizeConfig.dynamic:
-  CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \\
-      --model /path/to/bf16/source --out /path/to/output \\
-      --preset quality --nsample 64 --seqlen 512 --offload-disk \\
-      --dynamic-ignore-json /path/to/modules_to_not_convert.generated.json
+Example:
+  CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \
+      --model /path/to/bf16/source --out /path/to/output \
+      --calibration-jsonl /path/to/coding_calib.jsonl \
+      --preset quality --nsample 64 --seqlen 512 --offload-disk
 """
 from __future__ import annotations
 
@@ -28,20 +22,31 @@ import argparse
 import json
 import os
 import re
-import sys
 import time
 from pathlib import Path
+from typing import Any
 
-FORBIDDEN_DEVICE_MAPS = {"auto", "balanced", "balanced_low_0"}
-
-DEFAULT_CALIBRATION_JSONL = (
-    "/home/op/ULTIMATE/NAMEOFMODEL/recipes/qwen36_selective_awq_original/"
-    "calibration/coding_calib.jsonl"
+SUPPORTED_MODEL_TYPES = {
+    "qwen3_5_text",
+}
+MTP_CONFIG_KEYS = {
+    "mtp_num_hidden_layers",
+    "num_nextn_predict_layers",
+    "num_next_n_predict_layers",
+}
+AUXILIARY_NAME_MARKERS = (
+    "mtp",
+    "nextn",
+    "next_n",
+    "eh_proj",
+    "enorm",
+    "hnorm",
+    "shared_head",
 )
 
 
-def log(msg: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+def log(message: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 def preflight_single_gpu() -> str:
@@ -52,154 +57,269 @@ def preflight_single_gpu() -> str:
     log(f"CUDA_VISIBLE_DEVICES={visible!r}  torch.cuda.device_count()={count}")
     if count != 1:
         raise SystemExit(
-            f"REFUSING TO RUN: expected exactly 1 visible CUDA device, got {count}. "
-            "Set CUDA_VISIBLE_DEVICES=0 (this repo's documented safe path for "
-            "<=24GB cards; multi-GPU calibration can replicate layers and OOM)."
+            f"REFUSING TO RUN: expected exactly one visible CUDA device, got {count}. "
+            "Set CUDA_VISIBLE_DEVICES to one GPU; multi-GPU calibration can "
+            "replicate layers and exhaust memory on <=24 GB cards."
         )
-    dev = torch.device("cuda:0")
-    probe = torch.zeros(1, device=dev)
-    assert probe.device.type == "cuda" and probe.device.index == 0
+
+    device = torch.device("cuda:0")
+    probe = torch.zeros(1, device=device)
+    if probe.device.type != "cuda" or probe.device.index != 0:
+        raise SystemExit(f"CUDA preflight produced unexpected device: {probe.device}")
     del probe
     return "cuda:0"
 
 
-def detect_mtp_aux(model_dir: str) -> dict:
-    idx_files = list(Path(model_dir).glob("*.safetensors.index.json"))
-    if not idx_files:
-        return {"index_found": False, "total_tensors": 0, "mtp_or_vision_tensor_count": 0, "examples": []}
-    names: list[str] = []
-    for idx in idx_files:
-        data = json.loads(idx.read_text())
-        names.extend(data.get("weight_map", {}).keys())
-    markers = ["mtp", "nextn", "next_n", "eh_proj", "enorm", "hnorm", "visual", "vision"]
-    hits = [n for n in names if any(m in n.lower() for m in markers)]
-    return {
-        "index_found": True,
-        "total_tensors": len(names),
-        "mtp_or_vision_tensor_count": len(hits),
-        "examples": hits[:20],
+def _find_truthy_config_keys(value: Any, path: str = "") -> list[str]:
+    hits: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else key
+            if key in MTP_CONFIG_KEYS and child not in (None, 0, False, [], {}):
+                hits.append(child_path)
+            hits.extend(_find_truthy_config_keys(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            hits.extend(_find_truthy_config_keys(child, f"{path}[{index}]"))
+    return hits
+
+
+def inspect_auxiliary_tensors(model_dir: str) -> dict[str, Any]:
+    """Inspect local config/index metadata without assuming MTP is absent.
+
+    MTP tensors can live in ordinary shards or a standalone file and may not be
+    materialized by Transformers. The model definition's ``out_of_model_tensors``
+    contract is therefore authoritative for preservation; this inspection is
+    diagnostic only.
+    """
+    root = Path(model_dir)
+    result: dict[str, Any] = {
+        "local": True,
+        "config_mtp_fields": [],
+        "index_files": [],
+        "auxiliary_tensor_count": 0,
+        "examples": [],
+        "standalone_mtp_file": False,
     }
 
+    config_path = root / "config.json"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        result["model_type"] = config.get("model_type")
+        result["architectures"] = config.get("architectures", [])
+        result["config_mtp_fields"] = _find_truthy_config_keys(config)
 
-def load_calibration(nsample: int, seqlen: int, tokenizer) -> list[str]:
-    rows = []
-    with open(DEFAULT_CALIBRATION_JSONL, encoding="utf-8") as f:
-        for line in f:
+    names: list[str] = []
+    for index_path in sorted(root.glob("*.safetensors.index.json")):
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        result["index_files"].append(index_path.name)
+        names.extend(payload.get("weight_map", {}).keys())
+
+    hits = [
+        name
+        for name in names
+        if any(marker in name.lower() for marker in AUXILIARY_NAME_MARKERS)
+    ]
+    result["auxiliary_tensor_count"] = len(hits)
+    result["examples"] = hits[:20]
+    result["standalone_mtp_file"] = (root / "mtp.safetensors").is_file()
+    return result
+
+
+def load_calibration(path: Path, nsample: int, seqlen: int, tokenizer) -> list[str]:
+    rows: list[str] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
-            rows.append(json.loads(line)["text"])
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"invalid JSON on calibration line {line_number}: {exc}") from exc
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise SystemExit(
+                    f"calibration line {line_number} must contain a non-empty string field named 'text'"
+                )
+            rows.append(text)
+            if len(rows) == nsample:
+                break
+
     if len(rows) < nsample:
-        raise SystemExit(f"calibration file only has {len(rows)} rows, need {nsample}")
-    rows = rows[:nsample]
-    # Truncate to --seqlen tokens (quantize() takes raw strings; GPTQ-Pro tokenizes
-    # internally, so truncation is applied here on the token-decoded text).
-    truncated = []
-    for r in rows:
-        ids = tokenizer(r, add_special_tokens=False)["input_ids"][:seqlen]
-        truncated.append(tokenizer.decode(ids))
+        raise SystemExit(f"calibration file has {len(rows)} usable rows, but --nsample requires {nsample}")
+
+    truncated: list[str] = []
+    for text in rows:
+        token_ids = tokenizer(text, add_special_tokens=False)["input_ids"][:seqlen]
+        if not token_ids:
+            raise SystemExit("calibration produced an empty token sequence")
+        truncated.append(
+            tokenizer.decode(
+                token_ids,
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+        )
     return truncated
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="Local path or HF id of the unquantized (bf16) source model")
-    ap.add_argument("--out", required=True, help="Output dir for the quantized model")
-    ap.add_argument("--preset", default="quality", choices=["fast", "quality", "max_quality"])
-    ap.add_argument("--nsample", type=int, default=64)
-    ap.add_argument("--seqlen", type=int, default=512)
-    ap.add_argument("--offload-disk", action="store_true")
-    ap.add_argument("--dry-run", action="store_true", help="Load model + run preflight, then exit before quantize()")
-    ap.add_argument(
-        "--dynamic-ignore-json",
-        default=None,
-        help="Path to a modules_to_not_convert.generated.json-style file (from the AWQ selective-quant "
-             "recipe); its 'modules_to_not_convert' list is applied as QuantizeConfig.dynamic '-:' "
-             "skip patterns, so GPTQ-Pro preserves the same modules bf16 that the AWQ recipe intended to.",
-    )
-    args = ap.parse_args()
+def load_dynamic_ignore(path: Path) -> dict[str, dict]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    modules = payload.get("modules_to_not_convert")
+    if not isinstance(modules, list) or not modules:
+        raise SystemExit(
+            f"{path} must contain a non-empty 'modules_to_not_convert' list"
+        )
+    if any(not isinstance(module, str) or not module for module in modules):
+        raise SystemExit("every modules_to_not_convert entry must be a non-empty string")
 
+    # Exact anchored patterns prevent layers.1 from matching layers.10.
+    return {f"-:^{re.escape(module)}$": {} for module in dict.fromkeys(modules)}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True, help="Local path or HF id of the unquantized source model")
+    parser.add_argument("--out", required=True, help="Fresh output directory for the quantized model")
+    parser.add_argument(
+        "--calibration-jsonl",
+        type=Path,
+        default=None,
+        help="JSONL with one non-empty 'text' field per row; required unless --dry-run is used",
+    )
+    parser.add_argument("--preset", default="quality", choices=["fast", "quality", "max_quality"])
+    parser.add_argument("--nsample", type=int, default=64)
+    parser.add_argument("--seqlen", type=int, default=512)
+    parser.add_argument("--offload-disk", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Validate load/layout, then stop before quantize()")
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Opt in only for derivatives that genuinely require remote code; official Qwen3.5/3.6 does not",
+    )
+    parser.add_argument(
+        "--dynamic-ignore-json",
+        type=Path,
+        default=None,
+        help="JSON file containing modules_to_not_convert for selective bf16 preservation",
+    )
+    args = parser.parse_args()
+
+    if args.nsample <= 0:
+        parser.error("--nsample must be greater than zero")
+    if args.seqlen <= 0:
+        parser.error("--seqlen must be greater than zero")
+    if not args.dry_run and args.calibration_jsonl is None:
+        parser.error("--calibration-jsonl is required unless --dry-run is used")
+    if args.calibration_jsonl is not None and not args.calibration_jsonl.is_file():
+        parser.error(f"calibration file does not exist: {args.calibration_jsonl}")
+    if args.dynamic_ignore_json is not None and not args.dynamic_ignore_json.is_file():
+        parser.error(f"dynamic ignore file does not exist: {args.dynamic_ignore_json}")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
     device = preflight_single_gpu()
 
-    if os.path.isdir(args.out) and any(Path(args.out).iterdir()):
+    output_path = Path(args.out)
+    if output_path.is_dir() and any(output_path.iterdir()):
         raise SystemExit(
-            f"REFUSING TO RUN: output dir {args.out} already exists and is non-empty. "
-            "Use a fresh or timestamped output dir; this script will not delete/overwrite partial outputs."
+            f"REFUSING TO RUN: output directory {output_path} is non-empty. "
+            "Use a fresh path; partial checkpoints are never overwritten."
         )
 
-    mtp_status = detect_mtp_aux(args.model) if os.path.isdir(args.model) else {"index_found": False, "note": "remote HF id, cannot inspect locally"}
-    log(f"MTP/vision tensor detection: {json.dumps(mtp_status)}")
+    if os.path.isdir(args.model):
+        inspection = inspect_auxiliary_tensors(args.model)
+    else:
+        inspection = {"local": False, "note": "remote model metadata is validated during load"}
+    log(f"Source inspection: {json.dumps(inspection, sort_keys=True)}")
 
     from gptqmodel import BACKEND, GPTQModel, QuantizeConfig
 
-    qcfg = {
-        "fast": lambda: QuantizeConfig(bits=4, group_size=128, sym=True, desc_act=False),
+    quantize_config = {
+        "fast": lambda: QuantizeConfig.fast_4bit(group_size=128, desc_act=False),
         "quality": lambda: QuantizeConfig.quality_4bit(group_size=128),
         "max_quality": lambda: QuantizeConfig.max_quality_4bit(group_size=128),
     }[args.preset]()
-    # Hard-pin the required format regardless of preset, per spec.
-    qcfg.bits = 4
-    qcfg.group_size = 128
-    qcfg.sym = True
-    qcfg.desc_act = False
+    quantize_config.calibration_data_device = device
     if args.offload_disk:
-        qcfg.offload_to_disk = True
-    qcfg.calibration_data_device = device
+        quantize_config.offload_to_disk = True
 
-    if args.dynamic_ignore_json:
-        ignore_doc = json.loads(Path(args.dynamic_ignore_json).read_text())
-        ignore_modules = ignore_doc["modules_to_not_convert"]
-        # `-:` = negative match; the layer walker skips any module whose exact
-        # name matches, regardless of what the model's module_tree marks as
-        # quantizable (gptqmodel/utils/model.py: `if overrides == False: return`).
-        # Escape literal dots and anchor start+end so e.g. "layers.1." can never
-        # accidentally match "layers.10.".
-        dynamic = {f"-:^{re.escape(m)}$": {} for m in ignore_modules}
-        qcfg.dynamic = dynamic
-        log(f"Dynamic ignore: preserving {len(ignore_modules)} modules bf16 from {args.dynamic_ignore_json}")
+    if args.dynamic_ignore_json is not None:
+        quantize_config.dynamic = load_dynamic_ignore(args.dynamic_ignore_json)
+        log(
+            f"Dynamic ignore: preserving {len(quantize_config.dynamic)} exact modules in source precision"
+        )
 
     log(
         "QuantizeConfig: "
         + json.dumps(
             {
-                "bits": qcfg.bits,
-                "group_size": qcfg.group_size,
-                "sym": qcfg.sym,
-                "desc_act": qcfg.desc_act,
-                "format": str(getattr(qcfg, "format", None)),
-                "method": str(getattr(qcfg, "method", None)),
-                "offload_to_disk": qcfg.offload_to_disk,
-                "calibration_data_device": str(qcfg.calibration_data_device),
-                "dynamic_ignore_count": len(qcfg.dynamic) if qcfg.dynamic else 0,
+                "bits": quantize_config.bits,
+                "group_size": quantize_config.group_size,
+                "sym": quantize_config.sym,
+                "desc_act": quantize_config.desc_act,
+                "format": str(getattr(quantize_config, "format", None)),
+                "method": str(getattr(quantize_config, "method", None)),
+                "offload_to_disk": quantize_config.offload_to_disk,
+                "calibration_data_device": str(quantize_config.calibration_data_device),
+                "dynamic_ignore_count": len(quantize_config.dynamic) if quantize_config.dynamic else 0,
             }
         )
     )
 
-    log(f"Loading model (device_map intentionally NOT passed): {args.model}")
-    model = GPTQModel.load(args.model, qcfg, trust_remote_code=True)
-    log(f"Loaded: {model.__class__.__name__}  modality={getattr(model, 'modality', 'n/a')}")
+    log(f"Loading model without a Transformers device_map: {args.model}")
+    model = GPTQModel.load(
+        args.model,
+        quantize_config,
+        trust_remote_code=args.trust_remote_code,
+    )
+
+    model_type = getattr(getattr(model.model, "config", None), "model_type", None)
+    if model_type not in SUPPORTED_MODEL_TYPES:
+        raise SystemExit(
+            f"this driver requires model_type in {sorted(SUPPORTED_MODEL_TYPES)}, got {model_type!r}; "
+            "use the multimodal or MoE Qwen3.5/Qwen3.6 driver for other config layouts"
+        )
+    if model.__class__.__name__ != "Qwen3_5TextQModel":
+        raise SystemExit(
+            f"unexpected GPTQ model definition {model.__class__.__name__}; expected Qwen3_5TextQModel"
+        )
 
     layers_node = model.extract_layers_node()
-    log(f"Detected layer root: {layers_node}")
+    if layers_node != ["model.layers"]:
+        raise SystemExit(f"unexpected text-only decoder root: {layers_node}")
+    log(f"Validated {model_type} through {model.__class__.__name__}; layer root={layers_node}")
 
     if args.dry_run:
-        log("DRY RUN: preflight passed, exiting before model.quantize().")
+        log("DRY RUN: architecture and placement validation passed.")
         return
 
     import transformers
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=True)
-    calib = load_calibration(args.nsample, args.seqlen, tokenizer)
-    log(f"Calibration: {len(calib)} real code samples (truncated to {args.seqlen} tokens each)")
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        args.model,
+        trust_remote_code=args.trust_remote_code,
+        use_fast=True,
+    )
+    calibration = load_calibration(
+        args.calibration_jsonl,
+        args.nsample,
+        args.seqlen,
+        tokenizer,
+    )
+    log(f"Calibration: {len(calibration)} samples, capped at {args.seqlen} tokens each")
 
     log("Starting quantize()...")
-    t0 = time.time()
-    model.quantize(calib, batch_size=1, backend=BACKEND.AUTO)
-    log(f"quantize() done in {(time.time() - t0) / 60:.1f} min")
+    started = time.time()
+    model.quantize(calibration, batch_size=1, backend=BACKEND.AUTO)
+    log(f"quantize() completed in {(time.time() - started) / 60:.1f} minutes")
 
-    os.makedirs(args.out, exist_ok=True)
-    model.save(args.out)
-    tokenizer.save_pretrained(args.out)
-    log(f"DONE -> {args.out}")
+    output_path.mkdir(parents=True, exist_ok=True)
+    model.save(str(output_path))
+    tokenizer.save_pretrained(str(output_path))
+    log(f"DONE -> {output_path}")
 
 
 if __name__ == "__main__":

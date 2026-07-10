@@ -86,7 +86,9 @@ model.save("Llama-3.1-8B-GPTQ-Pro-4bit")
 
 All model families from the GPTQModel foundation are supported, including:
 
-- **Qwen3 / Qwen3.5 / Qwen3.5-MoE** (dense + MoE, multimodal vision, and flat text-only `qwen3_5_text` / `qwen3_5_moe_text` checkpoints)
+- **Qwen3 / Qwen3.5 / Qwen3.6** — dense and MoE, multimodal, flat text-only
+  (`qwen3_5_text` / `qwen3_5_moe_text`), and nested MoE language-model-only conversions.
+  Qwen3.6 intentionally reuses the Qwen3.5 Transformers classes and model types.
 - **LLaMA 3.x / LLaMA 4**
 - **Gemma 2 / Gemma 3 / Gemma 4**
 - **Mistral / Mixtral**
@@ -94,6 +96,29 @@ All model families from the GPTQModel foundation are supported, including:
 - **DeepSeek-V2 / DeepSeek-V3**
 - **OLMo / OLMoE**
 - And many others — see `gptqmodel/models/definitions/`
+
+### Qwen3.5 / Qwen3.6 guarantees
+
+- The module walker handles the 3:1 hybrid stack of linear-attention and full-attention layers.
+- Q/K norms, recurrent-state helpers, convolution and MoE routers remain in source precision.
+- MoE shared-expert and routed-expert traversal follows the model's real forward order.
+- Vision towers are loaded for multimodal calibration but are not quantized.
+- Auxiliary `mtp.*` draft-head tensors are copied through unchanged for dense and MoE checkpoints.
+- Converted `language_model_only=true` MoE checkpoints discard the unused vision tower before calibration.
+
+For the flat dense text-only driver:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \
+  --model /path/to/qwen35-or-qwen36-text-checkpoint \
+  --out /path/to/output \
+  --calibration-jsonl /path/to/calibration.jsonl \
+  --preset quality --nsample 64 --seqlen 512 --offload-disk
+```
+
+Use `--dry-run` first to validate that the checkpoint resolves as `qwen3_5_text` and that
+the decoder root is `model.layers`. Official Qwen3.5/Qwen3.6 support is built into
+Transformers; only pass `--trust-remote-code` for a derivative that genuinely needs it.
 
 ---
 
