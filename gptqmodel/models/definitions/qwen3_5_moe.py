@@ -11,9 +11,8 @@ from ..base import BaseQModel
 from ._qwen3_5_vision import Qwen3_5VisionMixin
 
 
-# Per-decoder-layer quant subtree shared by every Qwen3.5-MoE variant (text + multimodal).
-# Only the module_tree *prefix* differs between variants (model.* vs model.language_model.*),
-# so the subtree is defined once and reused.
+# Per-decoder-layer quant subtree shared by every Qwen3.5/Qwen3.6 MoE variant
+# (text + multimodal). Only the module_tree prefix differs between variants.
 QWEN3_5_MOE_LAYER_SUBTREE = {
     "input_layernorm": ("input_layernorm:!",),
     "self_attn": ("q_norm:!", "q_proj:0", "k_norm:!", "k_proj:0", "v_proj:0", "o_proj:1"),
@@ -28,56 +27,47 @@ QWEN3_5_MOE_LAYER_SUBTREE = {
     ),
     "post_attention_layernorm": ("post_attention_layernorm:!",),
     "mlp:moe:?": {
-        "gate": ("gate:!",),  # <-- router. ~0.5MB per layer. Not worth quantizing
+        "gate": ("gate:!",),  # Router stays in source precision.
         "shared_expert_gate": ("shared_expert_gate:!",),
+        # Match the real Qwen3.5/Qwen3.6 forward order. The shared expert is
+        # evaluated before routed experts; reversing these nodes breaks the
+        # subset walker's execution boundary and can capture the wrong input
+        # when early-stop calibration is enabled.
+        "shared_expert:0": ("gate_proj:0", "up_proj:0", "down_proj:1"),
         "experts:0": {
             "#": ("gate_proj:0", "up_proj:0", "down_proj:1"),
         },
-        "shared_expert:0": ("gate_proj:0", "up_proj:0", "down_proj:1"),
     },
 }
 
 
 class Qwen3_5_MoeBaseQModel(BaseQModel):
-    """Shared Qwen3.5-MoE quantization contract for the text and multimodal variants.
+    """Shared Qwen3.5/Qwen3.6 MoE quantization contract.
 
-    Holds the per-layer quant subset (linear_attn / self_attn / MoE experts +
-    shared_expert, with conv1d / A_log / dt_bias / in_proj_a/b / router gate left
-    unquantized), the defused gate/up/down expert lifecycle, the dynamic expert index,
-    and MTP exclusion (``mtp.*`` tensors are passed through unquantized at save time).
-    Subclasses pin the loader, processor requirement, modality, norms and the
-    ``module_tree`` prefix.
+    The hybrid attention projections and routed/shared expert MLPs are
+    quantized. Recurrent-state helpers, convolution, routers, norms and MTP
+    draft heads remain in source precision. Subclasses only select the loader,
+    modality and decoder prefix.
     """
 
     layer_modules_strict = False
 
     require_monkeypatch = False
 
-    # allow dynamic expert index for layer_modules so we don't need to write out 64 layers here
-    # config.num_experts contains the actual expert count used for index
+    # config.num_experts contains the real routed expert count.
     dynamic_expert_index = "num_experts"
 
-    # MTP / next-n-prediction tensors are not quantized; the writer merges any mtp.* tensor
-    # from the source checkpoint back into the saved checkpoint untouched.
+    # Preserve auxiliary MTP / next-token-prediction tensors unchanged.
     out_of_model_tensors = {"prefixes": ["mtp"]}
 
-    # awq scaling optimizations requires some modules within same subset to strictly match the shape of previous module
-    # the o_proj must match v_proj or else scaling optimizations are skipped (GQA vs MHA)
+    # Shape-dependent scaling is valid only when o_proj matches v_proj.
     awq_scale_optimize_shape_dependent_modules = ["self_attn.o_proj"]
 
-    # MoE lifecycle hooks for gate_proj/up_proj/down_proj pattern
     moe_lifecycle_hooks = GateUpDownMoELifecycleHooks()
 
 
 class Qwen3_5_MoeQModel(Qwen3_5VisionMixin, Qwen3_5_MoeBaseQModel):
-    """Multimodal Qwen3.5-MoE (``Qwen3_5MoeForConditionalGeneration``-style checkpoint).
-
-    The decoder lives under ``model.language_model.*`` and loads via
-    ``AutoModelForImageTextToText`` with a processor. The vision tower
-    (``model.visual`` / ``vision_tower`` / ``vision_model``) is materialized for the
-    calibration forward pass and offloaded afterwards by :class:`Qwen3_5VisionMixin`;
-    it is never quantized (kept at original precision).
-    """
+    """Multimodal Qwen3.5/Qwen3.6 MoE checkpoint."""
 
     loader = AutoModelForImageTextToText
 
