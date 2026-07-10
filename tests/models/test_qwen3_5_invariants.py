@@ -69,6 +69,20 @@ def _layer_subtree(cls):
     return cls.module_tree[-1]
 
 
+def test_dense_multimodal_variant_uses_vision_lifecycle():
+    from gptqmodel.models.definitions._qwen3_5_vision import Qwen3_5VisionMixin
+
+    cls = Qwen3_5QModel
+    assert cls.loader is AutoModelForImageTextToText
+    assert cls.require_load_processor is True
+    assert cls.modality == [MODALITY.TEXT, MODALITY.IMAGE_TO_TEXT]
+    assert Qwen3_5VisionMixin in cls.__mro__
+    assert cls.extract_layers_node() == [
+        "model.language_model.layers",
+        "language_model.layers",
+    ]
+
+
 def test_moe_text_variant_is_text_only():
     cls = Qwen3_5_MoeTextQModel
     assert cls.loader is AutoModelForCausalLM
