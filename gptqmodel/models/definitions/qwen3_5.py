@@ -29,6 +29,12 @@ class Qwen3_5QModel(LlamaQModel):
 
     rotary_embedding = "model.language_model.rotary_emb"
 
+    # Qwen3.5 and Qwen3.6 dense checkpoints may store MTP/draft-head tensors
+    # outside the instantiated Transformers model. Preserve every mtp.* tensor
+    # verbatim when writing the quantized checkpoint instead of silently
+    # dropping the auxiliary prediction head.
+    out_of_model_tensors = {"prefixes": ["mtp"]}
+
     module_tree = [
         "model",
         "language_model",
