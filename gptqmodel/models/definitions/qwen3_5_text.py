@@ -9,14 +9,12 @@ from . import LlamaQModel
 
 
 class Qwen3_5TextQModel(LlamaQModel):
-    """Text-only Qwen3.5 dense (``Qwen3_5ForCausalLM`` / model_type ``qwen3_5_text``).
+    """Text-only Qwen3.5/Qwen3.6 dense checkpoint.
 
-    Unlike the multimodal sibling :class:`Qwen3_5QModel` (whose decoder lives under
-    ``model.language_model.*`` and loads via ``AutoModelForImageTextToText`` with a
-    processor and a vision tower), the text checkpoint builds ``self.model =
-    Qwen3_5Model(config)`` directly, so the decoder stack, final norm and rotary
-    embedding live under ``model.*``. It loads with ``AutoModelForCausalLM`` and needs
-    only a tokenizer -- no processor, no vision tower.
+    Unlike the multimodal sibling :class:`Qwen3_5QModel` (whose decoder lives
+    under ``model.language_model.*`` and loads through an image-text model), a
+    flat text checkpoint builds its decoder directly under ``model.*``. It
+    therefore loads through ``AutoModelForCausalLM`` and needs only a tokenizer.
     """
 
     config_class = Qwen3_5TextConfig
@@ -32,6 +30,11 @@ class Qwen3_5TextQModel(LlamaQModel):
     pre_lm_head_norm_module = "model.norm"
 
     rotary_embedding = "model.rotary_emb"
+
+    # Text-only derivatives can still ship auxiliary MTP/draft-head tensors in
+    # separate safetensor shards. They are not quantization targets, but they
+    # must survive the save path unchanged.
+    out_of_model_tensors = {"prefixes": ["mtp"]}
 
     module_tree = [
         "model",
