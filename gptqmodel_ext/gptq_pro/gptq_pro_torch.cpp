@@ -49,6 +49,7 @@ int parse_kernel_mode(const std::string& kernel_mode) {
         "gptq_pro_gemm: kernel_mode must be one of auto, gemv, ampere, or legacy; got `",
         kernel_mode,
         "`.");
+    return kKernelAuto;
 }
 
 void check_inputs(
