@@ -38,7 +38,9 @@ def _resolve_extension_attr(module_name: str, attr_name: str) -> TorchOpsJitExte
     return _resolve_attr(module_name, attr_name)
 
 
-def _resolve_extension_factory(module_name: str, attr_name: str) -> TorchOpsJitExtension:
+def _resolve_extension_factory(
+    module_name: str, attr_name: str
+) -> TorchOpsJitExtension:
     return _resolve_attr(module_name, attr_name)()
 
 
@@ -46,12 +48,16 @@ _EXTENSION_SPECS = (
     _ExtensionSpec(
         name="pack_block_cpu",
         aliases=("pack_block", "pack"),
-        resolve=lambda: _resolve_extension_factory("gptqmodel.utils.cpp", "_pack_block_extension"),
+        resolve=lambda: _resolve_extension_factory(
+            "gptqmodel.utils.cpp", "_pack_block_extension"
+        ),
     ),
     _ExtensionSpec(
         name="floatx_cpu",
         aliases=("floatx", "quant_dtype_cpu"),
-        resolve=lambda: _resolve_extension_factory("gptqmodel.utils.cpp", "_floatx_cpu_extension"),
+        resolve=lambda: _resolve_extension_factory(
+            "gptqmodel.utils.cpp", "_floatx_cpu_extension"
+        ),
     ),
 )
 
