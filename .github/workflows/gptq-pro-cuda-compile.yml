@@ -1,0 +1,49 @@
+name: GPTQ-Pro CUDA Compile
+
+on:
+  pull_request:
+    paths:
+      - "gptqmodel_ext/gptq_pro/**"
+      - "gptqmodel/utils/gptq_pro.py"
+      - "gptqmodel/nn_modules/qlinear/gptq_pro.py"
+      - "scripts/benchmark_gptq_pro_kernel.py"
+      - ".github/workflows/gptq-pro-cuda-compile.yml"
+  push:
+    branches:
+      - perf/ampere-kernel-pipeline
+    paths:
+      - "gptqmodel_ext/gptq_pro/**"
+      - ".github/workflows/gptq-pro-cuda-compile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install host compiler
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential
+          rm -rf /var/lib/apt/lists/*
+      - name: Compile standalone validator for Ampere targets
+        working-directory: gptqmodel_ext/gptq_pro
+        run: |
+          nvcc -O3 -std=c++17 -lineinfo \
+            -U__CUDA_NO_HALF_OPERATORS__ \
+            -U__CUDA_NO_HALF_CONVERSIONS__ \
+            -gencode arch=compute_80,code=sm_80 \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_87,code=sm_87 \
+            -gencode arch=compute_87,code=compute_87 \
+            gptq_pro_validate.cu gptq_pro_kernel.cu \
+            -o /tmp/gptq_pro_validate
+      - name: Record binary metadata
+        run: |
+          test -x /tmp/gptq_pro_validate
+          ls -lh /tmp/gptq_pro_validate
