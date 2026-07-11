@@ -1,15 +1,10 @@
 /*
- * Standalone gptq_pro Tensor Core scaffold for Ampere.
+ * GPTQ-Pro Ampere INT4 kernel primitives.
  *
- * Current scope:
- *   - one warp per CTA
- *   - symmetric INT4 weights packed as unsigned nibbles with implicit zero-point 8
- *   - explicit shared-memory staging for the A tile, per-column scales, and B fragments
- *   - FP32 accumulation via mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
- *
- * This kernel is validator-backed and end-to-end functional, but it is still the
- * compact standalone scaffold referenced in README/progress.md rather than the
- * future multi-warp cp.async/ldmatrix pipeline discussed in Project.md.
+ * The runtime consumes GPTQ's native int32 qweight layout directly. Every word
+ * stores eight K-axis nibbles for one output column. A 16-wide K tile therefore
+ * needs two coalesced qweight rows—the same 512 global bytes as the pair-packed
+ * representation, without a second persistent weight buffer.
  */
 
 #pragma once
@@ -20,123 +15,231 @@
 #include <stdint.h>
 
 // ---------------------------------------------------------------------------
-// Tile dimensions
+// Tile and dispatch constants
 // ---------------------------------------------------------------------------
-static constexpr int GPTQ_PRO_PIPE      = 1;   // current scaffold uses one staged tile
-static constexpr int GPTQ_PRO_KS_TILES  = 1;   // one mma.sync k16 step per outer K tile
-static constexpr int GPTQ_PRO_J_TILES   = 8;   // 8 x n8 slices -> 64 output cols / warp
+static constexpr int GPTQ_PRO_PIPE = 2;
+static constexpr int GPTQ_PRO_KS_TILES = 1;
+static constexpr int GPTQ_PRO_J_TILES = 8;
 static constexpr int GPTQ_PRO_WARP_SIZE = 32;
 
 static constexpr int GPTQ_PRO_M_PER_WARP = 16;
 static constexpr int GPTQ_PRO_N_PER_WARP = GPTQ_PRO_J_TILES * 8;    // 64
 static constexpr int GPTQ_PRO_K_PER_WARP = GPTQ_PRO_KS_TILES * 16;  // 16
 
-// Number of uint32_t words per (ks,j) tile in Bfrag smem (lane-pair packing).
-static constexpr int GPTQ_PRO_BFRAG_WORDS_PER_TILE =
-    GPTQ_PRO_WARP_SIZE / 2;  // 16 words
+static constexpr int GPTQ_PRO_WARPS_PER_CTA = 4;
+static constexpr int GPTQ_PRO_THREADS_PER_CTA =
+    GPTQ_PRO_WARPS_PER_CTA * GPTQ_PRO_WARP_SIZE;
+static constexpr int GPTQ_PRO_N_PER_CTA =
+    GPTQ_PRO_WARPS_PER_CTA * GPTQ_PRO_N_PER_WARP;  // 256
 
-// Total uint32_t words for all (ks,j) tiles in one smem buffer.
+static constexpr int GPTQ_PRO_QWORD_ROWS_PER_K_TILE =
+    GPTQ_PRO_K_PER_WARP / 8;  // 2 int32 rows
+static constexpr int GPTQ_PRO_QWORD_VALUES_PER_WORD = 8;
+static constexpr int GPTQ_PRO_QWORD_BYTES_PER_WARP_TILE =
+    GPTQ_PRO_QWORD_ROWS_PER_K_TILE * GPTQ_PRO_N_PER_WARP *
+    sizeof(uint32_t);  // 512
+
+static constexpr int GPTQ_PRO_GEMV_THREADS = 128;
+static constexpr int GPTQ_PRO_GEMV_MAX_M = 4;
+
+// Number of uint32_t words per legacy (ks,j) B-fragment shared tile.
+static constexpr int GPTQ_PRO_BFRAG_WORDS_PER_TILE =
+    GPTQ_PRO_WARP_SIZE / 2;
 static constexpr int GPTQ_PRO_BFRAG_WORDS_PER_BUF =
-    GPTQ_PRO_KS_TILES * GPTQ_PRO_J_TILES * GPTQ_PRO_BFRAG_WORDS_PER_TILE;
+    GPTQ_PRO_KS_TILES * GPTQ_PRO_J_TILES *
+    GPTQ_PRO_BFRAG_WORDS_PER_TILE;
+
+enum GptqProKernelMode : int {
+    GPTQ_PRO_KERNEL_AUTO = 0,
+    GPTQ_PRO_KERNEL_GEMV = 1,
+    GPTQ_PRO_KERNEL_AMPERE = 2,
+    GPTQ_PRO_KERNEL_LEGACY = 3,
+};
 
 // ---------------------------------------------------------------------------
 // Helper types
 // ---------------------------------------------------------------------------
 union Half2Reg {
-    half2    h2;
+    half2 h2;
     uint32_t u32;
     uint16_t u16[2];
 };
 
-__device__ __forceinline__
-uint32_t pack_half2_reg(half lo, half hi) {
+__device__ __forceinline__ uint32_t pack_half2_reg(half lo, half hi) {
     Half2Reg reg;
     reg.h2 = __halves2half2(lo, hi);
     return reg.u32;
 }
 
 // ---------------------------------------------------------------------------
-// Shared-memory layout helpers for the B fragment.
-//
-// The current scaffold stages one k16 slice at a time, so only ks=0 is used in
-// practice, but the helper keeps the (buf, ks, j, lane) contract so the decode
-// validator continues to exercise the exact same lane-pair packing logic.
+// Ampere asynchronous copy helpers
 // ---------------------------------------------------------------------------
-__device__ __forceinline__
-uint32_t bfrag_smem_addr(const uint32_t* __restrict__ smem_bfrag_base,
-                         int buf, int ks, int j, int lane) {
-    const int tile_idx  = ks * GPTQ_PRO_J_TILES + j;
+__device__ __forceinline__ void cp_async_ca_16(
+    void* smem_ptr, const void* global_ptr, int source_bytes = 16) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const uint32_t smem =
+        static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
+    asm volatile(
+        "cp.async.ca.shared.global [%0], [%1], 16, %2;\n"
+        :
+        : "r"(smem), "l"(global_ptr), "r"(source_bytes));
+#else
+    (void)smem_ptr;
+    (void)global_ptr;
+    (void)source_bytes;
+#endif
+}
+
+__device__ __forceinline__ void cp_async_cg_16(
+    void* smem_ptr, const void* global_ptr, int source_bytes = 16) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const uint32_t smem =
+        static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
+    asm volatile(
+        "cp.async.cg.shared.global [%0], [%1], 16, %2;\n"
+        :
+        : "r"(smem), "l"(global_ptr), "r"(source_bytes));
+#else
+    (void)smem_ptr;
+    (void)global_ptr;
+    (void)source_bytes;
+#endif
+}
+
+__device__ __forceinline__ void cp_async_commit_group() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    asm volatile("cp.async.commit_group;\n" ::);
+#endif
+}
+
+template <int PendingGroups>
+__device__ __forceinline__ void cp_async_wait_group() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    asm volatile("cp.async.wait_group %0;\n" : : "n"(PendingGroups));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// LOP3-assisted INT4 decode
+// ---------------------------------------------------------------------------
+template <int Lut>
+__device__ __forceinline__ uint32_t lop3_u32(
+    uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t result;
+    asm volatile(
+        "lop3.b32 %0, %1, %2, %3, %4;\n"
+        : "=r"(result)
+        : "r"(a), "r"(b), "r"(c), "n"(Lut));
+    return result;
+}
+
+// Convert four packed nibbles to the two FP16 B-fragment registers expected by
+// mma.sync. The bit trick follows the Apache-2.0 Marlin/FasterTransformer-style
+// conversion and fuses the symmetric -8 offset before scale multiplication.
+__device__ __forceinline__ void decode_bfrag_to_rb(
+    uint16_t packed_16, half scale, half zero_point, uint32_t (&RB)[2]) {
+    (void)zero_point;  // GPTQ-Pro's runtime contract always uses zero-point 8.
+
+    const uint32_t p = static_cast<uint32_t>(packed_16);
+    // Reorder [w0,w1,w2,w3] so LOP3 creates half2(w0,w1) and
+    // half2(w2,w3), matching the PTX B-fragment register order.
+    const uint32_t q =
+        (p & 0x0000000Fu) | ((p >> 4) & 0x000000F0u) |
+        ((p & 0x000000F0u) << 12) | ((p & 0x0000F000u) << 8);
+
+    constexpr uint32_t LO = 0x000f000f;
+    constexpr uint32_t HI = 0x00f000f0;
+    constexpr uint32_t EX = 0x64006400;
+    constexpr uint32_t SUB = 0x64086408;
+    constexpr uint32_t MUL = 0x2c002c00;
+    constexpr uint32_t ADD = 0xd480d480;
+
+    constexpr int AND_OR_LUT = (0xf0 & 0xcc) | 0xaa;
+    Half2Reg lo_reg;
+    Half2Reg hi_reg;
+    Half2Reg sub_reg;
+    Half2Reg mul_reg;
+    Half2Reg add_reg;
+    Half2Reg out0;
+    Half2Reg out1;
+
+    lo_reg.u32 = lop3_u32<AND_OR_LUT>(q, LO, EX);
+    hi_reg.u32 = lop3_u32<AND_OR_LUT>(q, HI, EX);
+    sub_reg.u32 = SUB;
+    mul_reg.u32 = MUL;
+    add_reg.u32 = ADD;
+
+    const half2 scale2 = __half2half2(scale);
+    out0.h2 = __hmul2(scale2, __hsub2(lo_reg.h2, sub_reg.h2));
+    out1.h2 = __hmul2(
+        scale2, __hfma2(hi_reg.h2, mul_reg.h2, add_reg.h2));
+    RB[0] = out0.u32;
+    RB[1] = out1.u32;
+}
+
+// ---------------------------------------------------------------------------
+// Native qweight shared-memory layout used by the optimized pipeline
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ uint16_t load_qweight_bfrag_packed16(
+    const uint32_t* __restrict__ smem_qweight, int j, int lane) {
+    const int group_id = lane >> 2;
+    const int thread_id = lane & 3;
+    const int n_local = j * 8 + group_id;
+    const uint32_t word0 = smem_qweight[n_local];
+    const uint32_t word1 =
+        smem_qweight[GPTQ_PRO_N_PER_WARP + n_local];
+    const uint8_t byte01 = static_cast<uint8_t>(
+        (word0 >> (thread_id * 8)) & 0xFFu);
+    const uint8_t byte89 = static_cast<uint8_t>(
+        (word1 >> (thread_id * 8)) & 0xFFu);
+    return static_cast<uint16_t>(byte01) |
+           (static_cast<uint16_t>(byte89) << 8);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy B-fragment helpers retained for the general-shape fallback and
+// standalone fragment validator.
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ uint32_t bfrag_smem_addr(
+    const uint32_t* __restrict__ smem_bfrag_base,
+    int buf,
+    int ks,
+    int j,
+    int lane) {
+    const int tile_idx = ks * GPTQ_PRO_J_TILES + j;
     const int buf_words = GPTQ_PRO_BFRAG_WORDS_PER_BUF;
-    const int word_idx  = buf * buf_words
-                        + tile_idx * GPTQ_PRO_BFRAG_WORDS_PER_TILE
-                        + (lane >> 1);
-    return static_cast<uint32_t>(__cvta_generic_to_shared(smem_bfrag_base))
-         + static_cast<uint32_t>(word_idx * sizeof(uint32_t));
+    const int word_idx =
+        buf * buf_words + tile_idx * GPTQ_PRO_BFRAG_WORDS_PER_TILE +
+        (lane >> 1);
+    return static_cast<uint32_t>(
+               __cvta_generic_to_shared(smem_bfrag_base)) +
+           static_cast<uint32_t>(word_idx * sizeof(uint32_t));
 }
 
-__device__ __forceinline__
-uint32_t ld_shared_u32(uint32_t smem_addr) {
-    uint32_t val;
-    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(val) : "r"(smem_addr));
-    return val;
+__device__ __forceinline__ uint32_t ld_shared_u32(uint32_t smem_addr) {
+    uint32_t value;
+    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(value) : "r"(smem_addr));
+    return value;
 }
 
-__device__ __forceinline__
-uint16_t fetch_bfrag_packed16(const uint32_t* __restrict__ smem_bfrag,
-                              int buf, int ks, int j, int lane) {
-    const uint32_t addr = bfrag_smem_addr(smem_bfrag, buf, ks, j, lane);
-    const uint32_t word = ld_shared_u32(addr);
-    return static_cast<uint16_t>((lane & 1) ? (word >> 16) : (word & 0xFFFFu));
-}
-
-// ---------------------------------------------------------------------------
-// INT4 nibble decode -> FP16 (scale * (w - 8)).
-//
-// The standalone scaffold currently models the symmetric GPTQ-style runtime
-// where 4-bit weights are stored as unsigned nibbles with an implicit zero-point
-// of 8 and a per-group/per-column FP16 scale.
-// ---------------------------------------------------------------------------
-__device__ __forceinline__
-void decode_bfrag_to_rb(uint16_t packed_16,
-                        half scale, half zero_point,
-                        uint32_t (&RB)[2]) {
-    const uint32_t p  = static_cast<uint32_t>(packed_16);
-    const uint32_t w0 = (p >>  0) & 0xFu;
-    const uint32_t w1 = (p >>  4) & 0xFu;
-    const uint32_t w2 = (p >>  8) & 0xFu;
-    const uint32_t w3 = (p >> 12) & 0xFu;
-
-    const half2 vals01 = __halves2half2(__int2half_rn(static_cast<int>(w0)),
-                                        __int2half_rn(static_cast<int>(w1)));
-    const half2 vals23 = __halves2half2(__int2half_rn(static_cast<int>(w2)),
-                                        __int2half_rn(static_cast<int>(w3)));
-    const half2 zp_h2 = __halves2half2(zero_point, zero_point);
-    const half2 sc_h2 = __halves2half2(scale, scale);
-
-    Half2Reg rb0, rb1;
-    rb0.h2 = __hmul2(sc_h2, __hsub2(vals01, zp_h2));
-    rb1.h2 = __hmul2(sc_h2, __hsub2(vals23, zp_h2));
-    RB[0] = rb0.u32;
-    RB[1] = rb1.u32;
+__device__ __forceinline__ uint16_t fetch_bfrag_packed16(
+    const uint32_t* __restrict__ smem_bfrag,
+    int buf,
+    int ks,
+    int j,
+    int lane) {
+    const uint32_t address =
+        bfrag_smem_addr(smem_bfrag, buf, ks, j, lane);
+    const uint32_t word = ld_shared_u32(address);
+    return static_cast<uint16_t>(
+        (lane & 1) ? (word >> 16) : (word & 0xFFFFu));
 }
 
 // ---------------------------------------------------------------------------
 // A-fragment packing for mma.sync.aligned.m16n8k16.row.col
-//
-// This loader follows the same lane ownership used in the validator's scalar
-// reference:
-//   groupID = lane >> 2
-//   tid4    = lane & 3
-//   rows    = {groupID, groupID + 8}
-//   cols    = {2*tid4, 2*tid4 + 1, 2*tid4 + 8, 2*tid4 + 9}
-//
-// Using explicit register packing avoids the invalid/misaligned ldmatrix path
-// that the earlier scaffold emitted for this compact one-warp layout.
 // ---------------------------------------------------------------------------
-__device__ __forceinline__
-void load_a_fragment_rowmajor(const half* __restrict__ smem_a,
-                              int lane,
-                              uint32_t (&RA)[4]) {
+__device__ __forceinline__ void load_a_fragment_rowmajor(
+    const half* __restrict__ smem_a, int lane, uint32_t (&RA)[4]) {
     const int group_id = lane >> 2;
     const int thread_id = lane & 3;
     const int a_col_lo = 2 * thread_id;
@@ -157,12 +260,10 @@ void load_a_fragment_rowmajor(const half* __restrict__ smem_a,
 }
 
 // ---------------------------------------------------------------------------
-// FP32 accumulating MMA: RC += RA x RB
+// FP32 accumulating Tensor Core MMA
 // ---------------------------------------------------------------------------
-__device__ __forceinline__
-void mma_f32_m16n8k16(const uint32_t RA[4],
-                      const uint32_t RB[2],
-                      float          RC[4]) {
+__device__ __forceinline__ void mma_f32_m16n8k16(
+    const uint32_t RA[4], const uint32_t RB[2], float RC[4]) {
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
         "{%0, %1, %2, %3}, "
@@ -170,14 +271,22 @@ void mma_f32_m16n8k16(const uint32_t RA[4],
         "{%8, %9}, "
         "{%0, %1, %2, %3};\n"
         : "+f"(RC[0]), "+f"(RC[1]), "+f"(RC[2]), "+f"(RC[3])
-        :  "r"(RA[0]),  "r"(RA[1]),  "r"(RA[2]),  "r"(RA[3]),
-           "r"(RB[0]),  "r"(RB[1]));
+        : "r"(RA[0]),
+          "r"(RA[1]),
+          "r"(RA[2]),
+          "r"(RA[3]),
+          "r"(RB[0]),
+          "r"(RB[1]));
 }
 
 cudaError_t gptq_pro_gemm(
-    const half*    A,
-    const uint8_t* B_packed,
-    const half*    S,
-    half*          C,
-    int M, int N, int K, int group_size,
-    cudaStream_t stream);
+    const half* A,
+    const int32_t* Q,
+    const half* S,
+    half* C,
+    int M,
+    int N,
+    int K,
+    int group_size,
+    cudaStream_t stream,
+    int kernel_mode = GPTQ_PRO_KERNEL_AUTO);

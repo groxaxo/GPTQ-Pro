@@ -22,15 +22,22 @@ from .rocm import IS_ROCM
 
 log = setup_logger()
 
+_GPTQ_PRO_EXTENSION_NAME = "gptqmodel_gptq_pro_kernels_v2"
 _GPTQ_PRO_LOCK = threading.Lock()
 _GPTQ_PRO_MODULE = None
 _GPTQ_PRO_INITIALISED = False
 _GPTQ_PRO_BUILD_PREPARED = False
 gptq_pro_import_exception: Optional[str] = None
 
+_KERNEL_MODES = {"auto", "gemv", "ampere", "legacy"}
+
 
 def _validate_gptq_pro_device_support() -> bool:
-    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 and not IS_ROCM
+    return (
+        torch.cuda.is_available()
+        and torch.cuda.get_device_capability()[0] >= 8
+        and not IS_ROCM
+    )
 
 
 def _gptq_pro_sources() -> tuple[Path, Path]:
@@ -44,9 +51,11 @@ def _prepare_build_directory(verbose: bool) -> str:
 
     build_dir_env = os.getenv("GPTQMODEL_EXT_BUILD")
     if build_dir_env:
-        build_directory = Path(build_dir_env) / "gptqmodel_gptq_pro_kernels"
+        build_directory = Path(build_dir_env) / _GPTQ_PRO_EXTENSION_NAME
     else:
-        build_directory = Path(_get_build_directory("gptqmodel_gptq_pro_kernels", verbose=verbose))
+        build_directory = Path(
+            _get_build_directory(_GPTQ_PRO_EXTENSION_NAME, verbose=verbose)
+        )
 
     if not _GPTQ_PRO_BUILD_PREPARED and build_directory.exists():
         shutil.rmtree(build_directory, ignore_errors=True)
@@ -63,7 +72,7 @@ def _build_gptq_pro_extension(verbose: bool):
 
     build_directory = _prepare_build_directory(verbose=verbose)
     return load(
-        name="gptqmodel_gptq_pro_kernels",
+        name=_GPTQ_PRO_EXTENSION_NAME,
         sources=[str(source_cpp), str(source_cu)],
         extra_cflags=["-O3", "-std=c++17"],
         extra_cuda_cflags=[
@@ -74,15 +83,12 @@ def _build_gptq_pro_extension(verbose: bool):
             "-U__CUDA_NO_HALF_CONVERSIONS__",
             # Target all Ampere SM variants with native SASS cubins:
             #   sm_80 — A100, A30, GA100 (data-centre Ampere)
-            #   sm_86 — RTX 3090/3080/A6000, GA102/GA104/GA106 (consumer + pro Ampere)
+            #   sm_86 — RTX 3090/3080/A6000, GA102/GA104/GA106
             #   sm_87 — Jetson Orin / embedded Ampere
             "-gencode arch=compute_80,code=sm_80",
             "-gencode arch=compute_86,code=sm_86",
             "-gencode arch=compute_87,code=sm_87",
-            # Embed sm_87 PTX as a forward-compatible fallback so the kernel can
-            # also be loaded on post-Ampere devices (Ada sm_89, Hopper sm_90, …)
-            # that pass the major >= 8 capability check.  The CUDA driver will
-            # JIT-compile the PTX to native code on first use for those GPUs.
+            # Embed PTX for driver-side JIT on newer architectures.
             "-gencode arch=compute_87,code=compute_87",
         ],
         build_directory=build_directory,
@@ -107,7 +113,7 @@ def ensure_gptq_pro_loaded(*, verbose: Optional[bool] = None):
 
         errors = []
         try:
-            _GPTQ_PRO_MODULE = load_extension_module("gptqmodel_gptq_pro_kernels")
+            _GPTQ_PRO_MODULE = load_extension_module(_GPTQ_PRO_EXTENSION_NAME)
             gptq_pro_import_exception = None
             _GPTQ_PRO_INITIALISED = True
             return _GPTQ_PRO_MODULE
@@ -116,7 +122,8 @@ def ensure_gptq_pro_loaded(*, verbose: Optional[bool] = None):
 
         if not _validate_gptq_pro_device_support():
             gptq_pro_import_exception = (
-                "GPTQ-Pro kernel requires Linux CUDA with compute capability >= 8.0 and does not support ROCm."
+                "GPTQ-Pro kernel requires Linux CUDA with compute capability >= 8.0 "
+                "and does not support ROCm."
             )
             _GPTQ_PRO_INITIALISED = True
             raise ImportError(gptq_pro_import_exception)
@@ -133,27 +140,54 @@ def ensure_gptq_pro_loaded(*, verbose: Optional[bool] = None):
             raise ImportError(gptq_pro_import_exception) from exc
 
 
+def normalize_gptq_pro_kernel_mode(kernel_mode: Optional[str] = None) -> str:
+    if kernel_mode is None:
+        kernel_mode = os.getenv("GPTQMODEL_GPTQ_PRO_KERNEL", "auto")
+    normalized = str(kernel_mode).strip().lower()
+    if normalized not in _KERNEL_MODES:
+        raise ValueError(
+            "GPTQ-Pro kernel mode must be one of "
+            f"{sorted(_KERNEL_MODES)}, got `{kernel_mode}`."
+        )
+    return normalized
+
+
 def gptq_pro_qweight_to_b_packed(qweight: torch.Tensor) -> torch.Tensor:
+    """Return the historical pair-packed byte view of GPTQ qweight.
+
+    The optimized runtime no longer uses this conversion; kernels consume the
+    native int32 qweight tensor directly. The helper is retained for checkpoint
+    inspection and backwards-compatible tooling.
+    """
     if qweight.dtype != torch.int32:
         raise ValueError(f"Expected int32 qweight tensor, got `{qweight.dtype}`.")
     if qweight.dim() != 2:
-        raise ValueError(f"Expected 2D qweight tensor, got shape `{tuple(qweight.shape)}`.")
+        raise ValueError(
+            f"Expected 2D qweight tensor, got shape `{tuple(qweight.shape)}`."
+        )
 
     qweight = qweight.contiguous()
-    shifts = torch.arange(0, 32, 4, device=qweight.device, dtype=qweight.dtype).view(1, 8, 1)
-    unpacked = torch.bitwise_and(torch.bitwise_right_shift(qweight.unsqueeze(1), shifts), 0xF).to(torch.uint8)
-    unpacked = unpacked.reshape(-1, qweight.shape[1])
-    return (unpacked[0::2] | (unpacked[1::2] << 4)).contiguous()
+    rows, columns = qweight.shape
+    bytes_by_word = qweight.view(torch.uint8).view(rows, columns, 4)
+    return bytes_by_word.permute(0, 2, 1).reshape(rows * 4, columns).contiguous()
 
 
 def apply_gptq_pro_linear(
     input: torch.Tensor,
-    b_packed: torch.Tensor,
+    qweight: torch.Tensor,
     scales: torch.Tensor,
     group_size: int,
+    kernel_mode: Optional[str] = None,
 ) -> torch.Tensor:
     module = ensure_gptq_pro_loaded()
-    return module.gptq_pro_gemm(input, b_packed, scales, int(group_size))
+    mode = normalize_gptq_pro_kernel_mode(kernel_mode)
+    return module.gptq_pro_gemm(
+        input,
+        qweight,
+        scales,
+        int(group_size),
+        mode,
+    )
 
 
 __all__ = [
@@ -162,4 +196,5 @@ __all__ = [
     "ensure_gptq_pro_loaded",
     "gptq_pro_import_exception",
     "gptq_pro_qweight_to_b_packed",
+    "normalize_gptq_pro_kernel_mode",
 ]

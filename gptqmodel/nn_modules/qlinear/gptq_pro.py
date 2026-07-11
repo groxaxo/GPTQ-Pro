@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -16,25 +16,21 @@ from ...utils.gptq_pro import (
     _validate_gptq_pro_device_support,
     apply_gptq_pro_linear,
     ensure_gptq_pro_loaded,
-    gptq_pro_qweight_to_b_packed,
 )
 from ...utils.rocm import IS_ROCM
 
 
-# GPTQ-Pro is the only inference kernel shipped by this fork. Priority 120 keeps
-# it first in the local AUTO registry wherever its validation contract is met.
-# This is a repository policy, not a benchmarked-performance claim: the kernel
-# remains a Tensor-Core scaffold (one warp/CTA, no cp.async/ldmatrix/multi-stage
-# pipeline, scalar INT4 decode, and no dedicated GEMV path). Unsupported
-# configurations fail validation cleanly; because there is no bundled fallback
-# kernel, callers must use a compatible checkpoint/device or another project.
+# GPTQ-Pro is the only inference kernel shipped by this fork. AUTO dispatches
+# small-M workloads to a coalesced decode kernel, aligned GEMMs to a four-warp
+# double-buffered cp.async Tensor Core path, and unusual compatible shapes to a
+# validator-backed general-shape fallback. All paths read the native int32
+# qweight tensor, avoiding a second persistent copy of quantized model weights.
 _GPTQ_PRO_AUTO_PRIORITY = 120
 
 
 class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
-    # Priority 120 keeps GPTQ-Pro first in the single-backend AUTO registry.
     SUPPORTS_FORMATS = {
         FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY,
         FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY,
@@ -152,9 +148,14 @@ class GptqProQuantLinear(PackableQuantLinear):
             and (effective_group_size % 16) != 0
         ):
             return False, NotImplementedError(
-                f"{cls} requires group_size to be a positive multiple of 16: actual group_size = `{effective_group_size}`"
+                f"{cls} requires group_size to be a positive multiple of 16: "
+                f"actual group_size = `{effective_group_size}`"
             )
         return True, None
+
+    @property
+    def effective_group_size(self) -> int:
+        return self.in_features if self.group_size == -1 else self.group_size
 
     def post_init(self):
         ensure_gptq_pro_loaded()
@@ -164,32 +165,25 @@ class GptqProQuantLinear(PackableQuantLinear):
                 "GPTQ-Pro backend requires CUDA-resident packed weights before post_init()."
             )
 
+        if not self.qweight.is_contiguous():
+            self.qweight = self.qweight.contiguous()
+        if not self.scales.is_contiguous():
+            self.scales = self.scales.contiguous()
+
         expected_g_idx = (
             torch.arange(
                 self.in_features,
                 device=self.g_idx.device,
                 dtype=self.g_idx.dtype,
             )
-            // self.group_size
+            // self.effective_group_size
         )
         if not torch.equal(self.g_idx, expected_g_idx):
             raise ValueError(
                 "GPTQ-Pro backend only supports sequential g_idx / desc_act=False checkpoints."
             )
 
-        b_packed = gptq_pro_qweight_to_b_packed(self.qweight)
-        if "b_packed" not in self._buffers:
-            self.register_buffer("b_packed", b_packed, persistent=False)
-        else:
-            self.b_packed = b_packed
-
         super().post_init()
-
-    def list_buffers(self) -> List:
-        buf = super().list_buffers()
-        if hasattr(self, "b_packed") and self.b_packed is not None:
-            buf.append(self.b_packed)
-        return buf
 
     def forward(self, x: torch.Tensor):
         if x.shape[0] == 0:
@@ -201,7 +195,8 @@ class GptqProQuantLinear(PackableQuantLinear):
         x = x.reshape(-1, x.shape[-1])
         if x.shape[-1] != self.in_features:
             raise ValueError(
-                f"GPTQ-Pro backend expected input dim {self.in_features}, got {x.shape[-1]}."
+                f"GPTQ-Pro backend expected input dim {self.in_features}, "
+                f"got {x.shape[-1]}."
             )
 
         if x.dtype != torch.float16:
@@ -209,9 +204,9 @@ class GptqProQuantLinear(PackableQuantLinear):
 
         out = apply_gptq_pro_linear(
             input=x.contiguous(),
-            b_packed=self.b_packed,
+            qweight=self.qweight,
             scales=self.scales,
-            group_size=self.group_size,
+            group_size=self.effective_group_size,
         )
 
         if self.bias is not None:
