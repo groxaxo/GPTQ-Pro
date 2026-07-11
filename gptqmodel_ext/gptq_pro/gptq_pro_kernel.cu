@@ -6,6 +6,9 @@
  *   2. a four-warp, double-buffered cp.async Tensor Core kernel for aligned
  *      production shapes;
  *   3. the original one-warp general-shape implementation as a fallback.
+ *
+ * All paths consume GPTQ's native int32 qweight layout directly. No persistent
+ * pair-packed duplicate of the quantized weights is required.
  */
 
 #include "gptq_pro_kernel.cuh"
@@ -17,12 +20,12 @@ struct __align__(16) GptqProLegacySmem {
 };
 
 struct __align__(16) GptqProAmpereSmem {
-    // A is shared by the four N-warps in a CTA. B and scales are warp-private.
+    // A is shared by the four N-warps in a CTA. Q and scales are warp-private.
     half A[GPTQ_PRO_PIPE][GPTQ_PRO_M_PER_WARP * GPTQ_PRO_K_PER_WARP];
     half S[GPTQ_PRO_WARPS_PER_CTA][GPTQ_PRO_PIPE][GPTQ_PRO_N_PER_WARP];
-    uint8_t
-        B[GPTQ_PRO_WARPS_PER_CTA][GPTQ_PRO_PIPE]
-         [GPTQ_PRO_B_BYTES_PER_WARP_TILE];
+    uint32_t
+        Q[GPTQ_PRO_WARPS_PER_CTA][GPTQ_PRO_PIPE]
+         [GPTQ_PRO_QWORD_ROWS_PER_K_TILE * GPTQ_PRO_N_PER_WARP];
 };
 
 __device__ __forceinline__ half zero_half() {
@@ -32,8 +35,8 @@ __device__ __forceinline__ half zero_half() {
 // ---------------------------------------------------------------------------
 // General-shape fallback helpers
 // ---------------------------------------------------------------------------
-__device__ __forceinline__ uint8_t load_b_pair_byte(
-    const uint8_t* __restrict__ B_packed,
+__device__ __forceinline__ uint8_t load_qweight_pair_byte(
+    const int32_t* __restrict__ Q,
     int K,
     int N,
     int k_even,
@@ -42,8 +45,10 @@ __device__ __forceinline__ uint8_t load_b_pair_byte(
         return 0x88u;
     }
 
-    const int packed_row = k_even >> 1;
-    uint8_t byte = B_packed[packed_row * N + n_col];
+    const int qword_row = k_even >> 3;
+    const int byte_index = (k_even & 7) >> 1;
+    const uint32_t word = static_cast<uint32_t>(Q[qword_row * N + n_col]);
+    uint8_t byte = static_cast<uint8_t>((word >> (byte_index * 8)) & 0xFFu);
     if (k_even + 1 >= K) {
         byte = static_cast<uint8_t>((byte & 0x0Fu) | 0x80u);
     }
@@ -51,7 +56,7 @@ __device__ __forceinline__ uint8_t load_b_pair_byte(
 }
 
 __device__ __forceinline__ uint16_t pack_lane_bfrag(
-    const uint8_t* __restrict__ B_packed,
+    const int32_t* __restrict__ Q,
     int N,
     int K,
     int k_base,
@@ -67,10 +72,8 @@ __device__ __forceinline__ uint16_t pack_lane_bfrag(
 
     const int k01 = k_base + 2 * thread_id;
     const int k89 = k01 + 8;
-    const uint8_t byte01 =
-        load_b_pair_byte(B_packed, K, N, k01, n_col);
-    const uint8_t byte89 =
-        load_b_pair_byte(B_packed, K, N, k89, n_col);
+    const uint8_t byte01 = load_qweight_pair_byte(Q, K, N, k01, n_col);
+    const uint8_t byte89 = load_qweight_pair_byte(Q, K, N, k89, n_col);
     return static_cast<uint16_t>(byte01) |
            (static_cast<uint16_t>(byte89) << 8);
 }
@@ -114,7 +117,7 @@ __device__ __forceinline__ void stage_scale_row_legacy(
 
 __device__ __forceinline__ void stage_bfrag_tiles_legacy(
     GptqProLegacySmem* __restrict__ smem,
-    const uint8_t* __restrict__ B_packed,
+    const int32_t* __restrict__ Q,
     int N,
     int K,
     int k_base,
@@ -125,10 +128,10 @@ __device__ __forceinline__ void stage_bfrag_tiles_legacy(
         const int j = index / GPTQ_PRO_BFRAG_WORDS_PER_TILE;
         const int lane_pair = index % GPTQ_PRO_BFRAG_WORDS_PER_TILE;
         const int even_lane = lane_pair * 2;
-        const uint16_t even_p16 = pack_lane_bfrag(
-            B_packed, N, K, k_base, n_base, j, even_lane);
-        const uint16_t odd_p16 = pack_lane_bfrag(
-            B_packed, N, K, k_base, n_base, j, even_lane + 1);
+        const uint16_t even_p16 =
+            pack_lane_bfrag(Q, N, K, k_base, n_base, j, even_lane);
+        const uint16_t odd_p16 =
+            pack_lane_bfrag(Q, N, K, k_base, n_base, j, even_lane + 1);
         smem->Bfrag[index] = static_cast<uint32_t>(even_p16) |
                              (static_cast<uint32_t>(odd_p16) << 16);
     }
@@ -162,7 +165,7 @@ __device__ __forceinline__ void do_mma_legacy(
 __device__ __forceinline__ void prefetch_ampere_tile(
     GptqProAmpereSmem* __restrict__ smem,
     const half* __restrict__ A,
-    const uint8_t* __restrict__ B_packed,
+    const int32_t* __restrict__ Q,
     const half* __restrict__ S,
     int M,
     int N,
@@ -189,28 +192,26 @@ __device__ __forceinline__ void prefetch_ampere_tile(
         cp_async_ca_16(destination, source, valid ? 16 : 0);
     }
 
-    // Each warp stages an 8x64 packed-weight tile using 32 coalesced 16-byte
-    // copies: one packed K row and one N segment per lane.
-    const int packed_row_local = lane >> 2;
-    const int n_segment = lane & 3;
-    const int global_n = n_base + n_segment * 16;
-    uint8_t* b_destination =
-        &smem->B[warp_id][buffer]
-                [packed_row_local * GPTQ_PRO_N_PER_WARP + n_segment * 16];
-    const int remaining_n = N - global_n;
-    const int b_source_bytes =
-        remaining_n >= 16 ? 16 : (remaining_n >= 8 ? 8 : 0);
-    const uint8_t* b_source =
-        b_source_bytes > 0
-            ? &B_packed[((k_base >> 1) + packed_row_local) * N + global_n]
-            : B_packed;
-    cp_async_cg_16(b_destination, b_source, b_source_bytes);
+    // Each warp stages two 64-column qweight rows. Every lane copies four
+    // adjacent int32 words (16 bytes), so all 128 threads issue coalesced loads.
+    const int qword_row_local = lane >> 4;
+    const int n_segment = lane & 15;
+    const int global_n = n_base + n_segment * 4;
+    uint32_t* q_destination =
+        &smem->Q[warp_id][buffer]
+                [qword_row_local * GPTQ_PRO_N_PER_WARP + n_segment * 4];
+    const bool q_valid = global_n + 4 <= N;
+    const int32_t* q_source =
+        q_valid
+            ? &Q[((k_base >> 3) + qword_row_local) * N + global_n]
+            : Q;
+    cp_async_cg_16(q_destination, q_source, q_valid ? 16 : 0);
 
     // Eight lanes per warp stage the 64 FP16 scales in 16-byte vectors.
     if (lane < 8) {
         const int scale_n = n_base + lane * 8;
         half* scale_destination = &smem->S[warp_id][buffer][lane * 8];
-        const bool valid = scale_n < N;
+        const bool valid = scale_n + 8 <= N;
         const int group_idx = k_base / group_size;
         const half* scale_source =
             valid ? &S[group_idx * N + scale_n] : S;
@@ -221,7 +222,7 @@ __device__ __forceinline__ void prefetch_ampere_tile(
 __device__ __forceinline__ void do_mma_ampere(
     const half* __restrict__ smem_a,
     const half* __restrict__ smem_s,
-    const uint8_t* __restrict__ smem_b,
+    const uint32_t* __restrict__ smem_qweight,
     int lane,
     float RC[GPTQ_PRO_J_TILES][4]) {
     const int group_id = lane >> 2;
@@ -234,7 +235,7 @@ __device__ __forceinline__ void do_mma_ampere(
     for (int j = 0; j < GPTQ_PRO_J_TILES; ++j) {
         const half scale = smem_s[j * 8 + group_id];
         const uint16_t packed_16 =
-            load_raw_bfrag_packed16(smem_b, j, lane);
+            load_qweight_bfrag_packed16(smem_qweight, j, lane);
         uint32_t RB[2];
         decode_bfrag_to_rb(packed_16, scale, zero_point, RB);
         mma_f32_m16n8k16(RA, RB, RC[j]);
@@ -289,7 +290,7 @@ __device__ __forceinline__ void store_mma_output(
 __global__ __launch_bounds__(GPTQ_PRO_GEMV_THREADS, 4)
 void gptq_pro_gemv_kernel(
     const half* __restrict__ A,
-    const uint8_t* __restrict__ B_packed,
+    const int32_t* __restrict__ Q,
     const half* __restrict__ S,
     half* __restrict__ C,
     int M,
@@ -311,22 +312,33 @@ void gptq_pro_gemv_kernel(
         const int k_end_candidate = k_begin + group_size;
         const int k_end = k_end_candidate < K ? k_end_candidate : K;
         const half2 scale2 = __half2half2(S[group * N + n]);
-        const int pair_begin = k_begin >> 1;
-        const int pair_end = k_end >> 1;
+        const int qword_begin = k_begin >> 3;
+        const int qword_end = (k_end + 7) >> 3;
 
-        for (int pair = pair_begin; pair < pair_end; ++pair) {
-            const float2 activation = __half22float2(a_pairs[pair]);
-            const uint8_t packed = B_packed[pair * N + n];
-            const int weight0 = static_cast<int>(packed & 0x0Fu) - 8;
-            const int weight1 = static_cast<int>((packed >> 4) & 0x0Fu) - 8;
-            const half2 signed_weights = __floats2half2_rn(
-                static_cast<float>(weight0), static_cast<float>(weight1));
-            const float2 dequantized =
-                __half22float2(__hmul2(scale2, signed_weights));
-            accumulator =
-                fmaf(activation.x, dequantized.x, accumulator);
-            accumulator =
-                fmaf(activation.y, dequantized.y, accumulator);
+        for (int qword_row = qword_begin; qword_row < qword_end;
+             ++qword_row) {
+            const uint32_t word =
+                static_cast<uint32_t>(Q[qword_row * N + n]);
+#pragma unroll
+            for (int byte_index = 0; byte_index < 4; ++byte_index) {
+                const int pair_index = qword_row * 4 + byte_index;
+                const float2 activation =
+                    __half22float2(a_pairs[pair_index]);
+                const uint8_t packed = static_cast<uint8_t>(
+                    (word >> (byte_index * 8)) & 0xFFu);
+                const int weight0 = static_cast<int>(packed & 0x0Fu) - 8;
+                const int weight1 =
+                    static_cast<int>((packed >> 4) & 0x0Fu) - 8;
+                const half2 signed_weights = __floats2half2_rn(
+                    static_cast<float>(weight0),
+                    static_cast<float>(weight1));
+                const float2 dequantized =
+                    __half22float2(__hmul2(scale2, signed_weights));
+                accumulator =
+                    fmaf(activation.x, dequantized.x, accumulator);
+                accumulator =
+                    fmaf(activation.y, dequantized.y, accumulator);
+            }
         }
     }
 
@@ -339,7 +351,7 @@ void gptq_pro_gemv_kernel(
 __global__ __launch_bounds__(GPTQ_PRO_THREADS_PER_CTA, 4)
 void gptq_pro_gemm_kernel_ampere(
     const half* __restrict__ A,
-    const uint8_t* __restrict__ B_packed,
+    const int32_t* __restrict__ Q,
     const half* __restrict__ S,
     half* __restrict__ C,
     int M,
@@ -369,7 +381,7 @@ void gptq_pro_gemm_kernel_ampere(
     prefetch_ampere_tile(
         smem,
         A,
-        B_packed,
+        Q,
         S,
         M,
         N,
@@ -391,7 +403,7 @@ void gptq_pro_gemm_kernel_ampere(
             prefetch_ampere_tile(
                 smem,
                 A,
-                B_packed,
+                Q,
                 S,
                 M,
                 N,
@@ -413,7 +425,7 @@ void gptq_pro_gemm_kernel_ampere(
         do_mma_ampere(
             smem->A[read_buffer],
             smem->S[warp_id][read_buffer],
-            smem->B[warp_id][read_buffer],
+            smem->Q[warp_id][read_buffer],
             lane,
             RC);
         // No thread may overwrite this buffer until every warp has finished
@@ -430,7 +442,7 @@ void gptq_pro_gemm_kernel_ampere(
 // ---------------------------------------------------------------------------
 __global__ void gptq_pro_gemm_kernel_legacy(
     const half* __restrict__ A,
-    const uint8_t* __restrict__ B_packed,
+    const int32_t* __restrict__ Q,
     const half* __restrict__ S,
     half* __restrict__ C,
     int M,
@@ -460,8 +472,7 @@ __global__ void gptq_pro_gemm_kernel_legacy(
         stage_a_tile_legacy(smem, A, M, K, m_base, k_base);
         stage_scale_row_legacy(
             smem, S, N, k_base, group_size, n_base);
-        stage_bfrag_tiles_legacy(
-            smem, B_packed, N, K, k_base, n_base);
+        stage_bfrag_tiles_legacy(smem, Q, N, K, k_base, n_base);
         __syncthreads();
         do_mma_legacy(smem, RC);
         __syncthreads();
@@ -473,17 +484,17 @@ __global__ void gptq_pro_gemm_kernel_legacy(
 #else
 
 __global__ void gptq_pro_gemv_kernel(
-    const half*, const uint8_t*, const half*, half*, int, int, int, int) {}
+    const half*, const int32_t*, const half*, half*, int, int, int, int) {}
 __global__ void gptq_pro_gemm_kernel_ampere(
-    const half*, const uint8_t*, const half*, half*, int, int, int, int) {}
+    const half*, const int32_t*, const half*, half*, int, int, int, int) {}
 __global__ void gptq_pro_gemm_kernel_legacy(
-    const half*, const uint8_t*, const half*, half*, int, int, int, int) {}
+    const half*, const int32_t*, const half*, half*, int, int, int, int) {}
 
 #endif
 
 cudaError_t gptq_pro_gemm(
     const half* A,
-    const uint8_t* B_packed,
+    const int32_t* Q,
     const half* S,
     half* C,
     int M,
@@ -502,7 +513,7 @@ cudaError_t gptq_pro_gemm(
         return cudaErrorInvalidValue;
     }
 
-    const bool gemv_compatible = (K % 2) == 0;
+    const bool gemv_compatible = (K % GPTQ_PRO_QWORD_VALUES_PER_WORD) == 0;
     const bool ampere_compatible =
         (K % GPTQ_PRO_K_PER_WARP) == 0 && (N % 16) == 0;
 
@@ -527,7 +538,7 @@ cudaError_t gptq_pro_gemm(
             1);
         const dim3 block(GPTQ_PRO_GEMV_THREADS, 1, 1);
         gptq_pro_gemv_kernel<<<grid, block, 0, stream>>>(
-            A, B_packed, S, C, M, N, K, group_size);
+            A, Q, S, C, M, N, K, group_size);
         return cudaGetLastError();
     }
 
@@ -542,7 +553,7 @@ cudaError_t gptq_pro_gemm(
         const dim3 block(GPTQ_PRO_THREADS_PER_CTA, 1, 1);
         const size_t smem_bytes = sizeof(GptqProAmpereSmem);
         gptq_pro_gemm_kernel_ampere<<<grid, block, smem_bytes, stream>>>(
-            A, B_packed, S, C, M, N, K, group_size);
+            A, Q, S, C, M, N, K, group_size);
         return cudaGetLastError();
     }
 
@@ -557,6 +568,6 @@ cudaError_t gptq_pro_gemm(
     const dim3 block(GPTQ_PRO_WARP_SIZE, 1, 1);
     const size_t smem_bytes = sizeof(GptqProLegacySmem);
     gptq_pro_gemm_kernel_legacy<<<grid, block, smem_bytes, stream>>>(
-        A, B_packed, S, C, M, N, K, group_size);
+        A, Q, S, C, M, N, K, group_size);
     return cudaGetLastError();
 }
