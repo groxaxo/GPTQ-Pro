@@ -1,41 +1,40 @@
 # GPTQ-Pro — current assessment and roadmap
 
-> Updated for the single-backend repository state on 11 July 2026.
+> Updated for the Ampere kernel pipeline on 11 July 2026.
 >
-> This document distinguishes code that exists in this fork from external
-> comparison baselines. Marlin, ExLlama, Machete, vLLM, SGLang, AWQ, BitBLAS,
-> MLX, and the other removed paths are **not shipped by GPTQ-Pro**.
+> This document distinguishes code shipped by this fork from external comparison
+> baselines. Marlin, ExLlama, Machete, vLLM, SGLang, AWQ, BitBLAS, MLX, and the
+> other removed paths are **not bundled by GPTQ-Pro**.
 
 ## Executive summary
 
-GPTQ-Pro is now a deliberately narrow research fork:
+GPTQ-Pro is a deliberately narrow research fork:
 
 - quantization method: GPTQ only;
 - checkpoint formats: GPTQ and GPTQ_V2;
-- inference kernel: GPTQ-Pro only;
+- inference backend: GPTQ-Pro only;
 - primary hardware: Linux NVIDIA GPUs, especially Ampere;
 - local runtime format: symmetric 4-bit, `desc_act=False`, FP16 activations,
-  `int32` packing.
+  `int32` source packing.
 
-The quantization code has a strong set of optional quality mechanisms, but the
-runtime kernel is still a performance scaffold. The project is useful for
-controlled experimentation, Qwen 3.5/3.6 quantization work, and kernel
-engineering. It should not yet be presented as a production-proven or
-benchmark-leading runtime.
+The runtime is no longer a single one-warp kernel. AUTO now dispatches among:
 
-The highest-priority work is no longer “select the best bundled backend.” There
-is no bundled fallback backend. The priority is to prove correctness and
-performance of GPTQ-Pro itself, then close the measured gaps.
+- a coalesced small-`M` decode kernel;
+- a four-warp, double-buffered `cp.async` Tensor Core kernel;
+- a general-shape correctness fallback.
+
+This closes several obvious Ampere design gaps, but implementation is not the
+same as proof. CUDA compilation is continuously checked; real GPU execution,
+profiler evidence, numerical matrices, and checked-in benchmark results remain
+release gates. Until those gates pass, GPTQ-Pro should not be described as
+benchmark-leading or production-proven.
 
 ## Current implementation
 
 ### 1. Public package surface
 
 The distribution and import names remain `GPTQModel` and `gptqmodel` for
-upstream compatibility. The project metadata points to this fork and no longer
-advertises removed backend extras.
-
-Current enums:
+upstream API and checkpoint compatibility.
 
 | Dimension | Values |
 |---|---|
@@ -43,30 +42,25 @@ Current enums:
 | `FORMAT` | `GPTQ`, `GPTQ_V2` |
 | `BACKEND` | `AUTO`, `AUTO_TRAINABLE`, `GPTQ_PRO` |
 
-`AUTO_TRAINABLE` is retained as an API compatibility selector, but the only
-runtime kernel declares `SUPPORTS_TRAINING=False`. It cannot currently resolve
-to a trainable quantized implementation.
+`AUTO_TRAINABLE` remains for compatibility, but the only runtime implementation
+sets `SUPPORTS_TRAINING=False`.
 
 ### 2. Quantization quality mechanisms
 
-The repository retains the following GPTQ-side capabilities:
+The repository retains:
 
 - Hessian/OBS-style GPTQ error compensation;
 - group-wise quantization;
 - group-aware reordering (`act_group_aware`);
 - optional act-order (`desc_act`);
-- MSE scale search;
-- activation-weighted MSE;
+- MSE and activation-weighted MSE scale search;
 - adaptive Cholesky damping;
 - fallback smoothing for poorly sampled blocks;
 - GPTAQ activation-aware error feedback;
 - optional FOEM;
 - optional Hadamard/random rotation;
-- dynamic per-module overrides and skip rules;
-- dense and MoE placement controls;
-- disk offload during quantization.
-
-These features are not all enabled by one preset.
+- dynamic per-module overrides;
+- dense/MoE placement controls and disk offload.
 
 | Preset | Exact intent |
 |---|---|
@@ -75,304 +69,284 @@ These features are not all enabled by one preset.
 | `max_quality_4bit()` | `quality_4bit()` plus GPTAQ |
 | `experimental_3bit_rotation()` | 3-bit GPTQ + GPTAQ + Hadamard rotation for supported architectures |
 
-Important constraints:
+Constraints:
 
-- `max_quality_4bit()` does not automatically enable FOEM or rotation.
-- The generic `fast_4bit()` preset inherits the base act-order default unless
-  `desc_act=False` is supplied.
-- The 3-bit preset can be used for standard-GPTQ export experiments, but the
-  local GPTQ-Pro kernel is 4-bit only and cannot execute the result.
+- `max_quality_4bit()` does not automatically enable FOEM or rotation;
+- `fast_4bit()` requires explicit `desc_act=False` for this runtime;
+- the local kernel is 4-bit only, so the 3-bit preset is export-only here;
+- faster CUDA execution does not improve the numerical quality of an existing
+  quantized checkpoint. Runtime and quantization quality must be evaluated
+  separately.
 
-### 3. GPTQ-Pro runtime kernel
+### 3. Runtime contract
 
-The runtime class is `GptqProQuantLinear`. Its validated contract is:
+`GptqProQuantLinear` validates:
 
-- Linux;
-- CUDA, non-ROCm;
+- Linux CUDA, non-ROCm;
 - compute capability 8.0 or newer;
 - FP16 activations;
 - symmetric 4-bit weights;
 - `desc_act=False` and sequential `g_idx`;
-- `int32` packing;
+- `int32` source packing;
 - input features divisible by 16;
 - output features divisible by 8;
-- group size `-1` or one of `16`, `32`, `64`, `128`, `256`, `512`, `1024`.
+- group size `-1` or `16`, `32`, `64`, `128`, `256`, `512`, `1024`.
 
-The extension build contains native SASS for `sm_80`, `sm_86`, and `sm_87`,
-plus `compute_87` PTX for driver-side JIT on newer architectures.
+The extension contains native SASS for `sm_80`, `sm_86`, and `sm_87`, plus
+`compute_87` PTX for driver-side JIT on newer architectures.
 
-Implemented kernel characteristics:
+### 4. Kernel dispatch
 
-- Tensor Core `mma.sync`;
-- FP32 accumulation;
-- group-based symmetric INT4 dequantization;
-- one warp per CTA;
-- one general GEMM path for both prompt processing and decode.
+#### Small-`M` decode path
 
-Missing production-kernel characteristics:
+For `M <= 4` and pair-compatible `K`, AUTO selects a dedicated GEMV-style
+kernel:
 
-- no dedicated GEMV/small-`M` decode path;
-- no `cp.async` multi-stage shared-memory pipeline;
-- no `ldmatrix` path;
-- no fused LOP3-style INT4 decode;
-- no broad vectorized load strategy;
-- no multi-warp tile family or autotuning;
-- no native BF16 path;
-- no training support.
+- one thread owns one output column;
+- packed-weight loads are contiguous across each warp;
+- scale loads are contiguous across output columns;
+- adjacent activation/weight pairs use `half2`;
+- weight dequantization rounds to FP16 before FP32 accumulation, matching the
+  runtime's Tensor Core numerical contract.
 
-`BACKEND.AUTO` chooses GPTQ-Pro because it is the only local inference kernel,
-not because a benchmark proves it is faster than external alternatives.
+The initial crossover is conservative and must be tuned from real GPU data.
 
-### 4. Extension loading
+#### Ampere Tensor Core path
 
-There are two distinct extension mechanisms:
+For aligned `K` and `N % 16 == 0`, AUTO selects a CTA tile that uses:
 
-1. `gptqmodel.extension` manages the generic CPU helper extensions
-   `pack_block_cpu` and `floatx_cpu`.
-2. `gptqmodel.utils.gptq_pro.ensure_gptq_pro_loaded()` loads or JIT-compiles the
-   CUDA inference extension on first use.
+- four warps per CTA;
+- a `16 × 256` output region;
+- two shared-memory stages;
+- `cp.async` 16-byte global-to-shared copies;
+- overlap of the next K tile's movement with current-tile MMA work;
+- a shared A tile and warp-private B/scale tiles;
+- `mma.sync.m16n8k16` with FP32 accumulation;
+- LOP3-assisted INT4-to-FP16 conversion;
+- vectorized `half2` stores.
 
-The removed `marlin` extension alias is not part of the public registry.
+#### General-shape fallback
 
-### 5. Qwen 3.5 / Qwen 3.6
+The original one-warp implementation remains available for compatible edge
+shapes and is selectable explicitly as `legacy`. It is not the preferred
+production path, but retaining it avoids converting an optimization change into
+a silent shape-support regression.
 
-Qwen 3.6 reuses Qwen 3.5 Transformers model types. The repository has explicit
-routing for dense and MoE, multimodal and text-only, plus nested
+#### Expert dispatch override
+
+`GPTQMODEL_GPTQ_PRO_KERNEL` accepts `auto`, `gemv`, `ampere`, or `legacy`.
+Forced modes fail on incompatible shapes. The override is intended for testing,
+not as a normal user requirement.
+
+### 5. Weight repacking
+
+GPTQ source tensors store eight nibbles in each `int32` word. The runtime now
+reinterprets those words as four bytes and transposes the byte axis into the
+kernel's pair-packed layout. This avoids the old broadcasted eight-nibble
+intermediate and substantially reduces temporary packing memory.
+
+Channelwise `group_size=-1` is normalized to `in_features` before validating
+`g_idx` and invoking the CUDA kernel.
+
+### 6. Extension and build validation
+
+There are two extension mechanisms:
+
+1. `gptqmodel.extension` manages generic CPU helpers;
+2. `ensure_gptq_pro_loaded()` loads or JIT-compiles the CUDA runtime.
+
+The CUDA compile workflow builds the standalone validator for native
+`sm_80`/`sm_86`/`sm_87` and forward-compatible PTX. Compilation proves that the
+source is accepted by the configured CUDA toolchain; it does not execute the
+kernel.
+
+The standalone validator covers:
+
+- LOP3 fragment decode;
+- forced GEMV;
+- forced pipelined Ampere mode;
+- AUTO decode and AUTO GEMM selection;
+- M and N tails;
+- odd edge shapes through the legacy fallback.
+
+Those checks must still be run on real hardware.
+
+### 7. Raw benchmark
+
+`scripts/benchmark_gptq_pro_kernel.py` records:
+
+- device and compute capability;
+- PyTorch and CUDA runtime versions;
+- warm-up and iteration counts;
+- median, mean, and p95 latency;
+- effective dense TFLOP/s;
+- a conservative memory-bandwidth lower bound;
+- numerical error and cosine similarity against a PyTorch reference;
+- forced AUTO/GEMV/Ampere/legacy comparisons where applicable.
+
+Performance claims should include the raw JSON output and the exact commit.
+
+### 8. Qwen 3.5 / Qwen 3.6
+
+Qwen 3.6 reuses Qwen 3.5 Transformers model types. The repository explicitly
+routes dense and MoE, multimodal and text-only, plus nested
 `language_model_only=true` MoE conversions.
 
-Current guarantees:
-
-- both linear-attention and full-attention projections are represented in the
-  quantization module trees;
-- Q/K norms, recurrent helpers, convolution, routers, and layer norms stay in
-  source precision;
-- shared-expert traversal precedes routed experts;
-- multimodal vision towers are materialized for calibration but not quantized;
-- `mtp.*` tensors are preserved by the writer even when Transformers does not
-  instantiate them;
-- the LM-only wrapper removes the unused vision tower before source-model
-  calibration.
-
+Current guarantees include hybrid linear/full-attention module trees, source-
+precision Q/K norms and recurrent helpers, shared-before-routed expert order,
+source-precision vision towers, and writer preservation of `mtp.*` tensors.
 See [`QWEN35_QWEN36.md`](QWEN35_QWEN36.md).
 
-### 6. Validation status
+## Validation status
 
-CPU-only tests cover configuration behavior, kernel selection/rejection,
-Qwen definition routing, vision lifecycle invariants, MTP declarations, and the
-extension registry.
+### Proven by checked-in automation
 
-The following remain environment-dependent and are not proven merely by unit
-tests:
+- Python packing-layout and kernel-mode normalization tests;
+- source-contract tests for the specialized dispatch paths;
+- CUDA compilation for Ampere SASS targets and PTX;
+- Qwen routing and preservation invariants;
+- package/manifest consistency checks.
 
-- successful JIT compilation with each supported CUDA/PyTorch/toolkit pair;
-- numerical parity across all supported shapes and group sizes;
-- long-context generation stability;
-- real multimodal generation after quantization;
-- perplexity/task-quality regression bounds;
-- throughput and latency versus the dense source model or external kernels;
-- multi-GPU memory behavior for very large MoE layers.
+### Not yet proven in this environment
 
-## Discrepancies removed in this documentation pass
-
-The previous roadmap was written before the repository was reduced to one
-backend and still described deleted code as locally available. The following
-claims are no longer made:
-
-- selecting `BACKEND.MARLIN` or falling through to Marlin/Machete;
-- building a bundled Marlin extension through `gptqmodel.extension`;
-- using vendored AutoRound or ParoQuant trees;
-- serving through bundled vLLM or SGLang paths;
-- exporting through bundled MLX support;
-- treating `max_quality_4bit()` as enabling FOEM and rotation;
-- treating the experimental 3-bit recipe as runnable by GPTQ-Pro;
-- claiming measured superiority without a checked-in benchmark result.
-
-External projects can still be useful comparison baselines, but references to
-them below do not imply that their code ships in this fork.
+- standalone validator execution on `sm_80`, `sm_86`, and `sm_87`;
+- numerical parity across every group size and production shape;
+- Nsight Compute counters for memory throughput, occupancy, Tensor Core use,
+  register pressure, and stall reasons;
+- measured decode/prefill crossover points;
+- model-level generation, perplexity, and task-quality regression;
+- long-context and multimodal stability;
+- multi-GPU behavior for very large MoE layers.
 
 ## Prioritized roadmap
 
 ### P0 — correctness and reproducibility
 
-#### C1. CUDA build matrix
+#### C1. Execute the CUDA validation matrix
 
-Add reproducible build smoke tests for at least:
+Run the standalone validator on at least:
 
 - RTX 3090 / `sm_86`;
 - A100 / `sm_80`;
-- one PTX-JIT device such as Ada or Hopper;
-- supported Python and PyTorch ranges;
-- clean build and cached rebuild paths.
+- Jetson Orin / `sm_87` when available;
+- an Ada or Hopper PTX-JIT target.
 
-Acceptance criteria:
+Record driver, toolkit, compiler, PyTorch, clock/power state, and exact commit.
 
-- extension compiles from a clean checkout;
-- a second process loads the cached artifact;
-- failure messages identify compiler, CUDA, or architecture incompatibilities;
-- artifacts and environment versions are recorded.
+#### C2. Expand the numerical matrix
 
-#### C2. Numerical reference harness
+Test:
 
-Create a shape and group-size matrix comparing the CUDA result with a clear
-PyTorch reference implementation.
-
-Cover:
-
-- `M` in `{1, 8, 64, 512}`;
-- odd and boundary-compatible `N`/`K` sizes;
-- every advertised group size;
+- all advertised group sizes;
+- `M` around dispatch boundaries;
+- aligned and tail `N` values;
+- multiple K sizes and random seeds;
 - bias and LoRA paths;
-- multiple random seeds and scale distributions;
-- finite-value, absolute-error, relative-error, and cosine-similarity checks.
+- finite-value, absolute/relative-error, and cosine bounds.
 
-Acceptance criteria must be encoded in tests rather than documented informally.
+Acceptance criteria must be executable tests, not prose.
 
-#### C3. Checkpoint round-trip tests
+#### C3. Model round trips
 
 For dense, MoE, text-only, and multimodal fixtures:
 
-- quantize;
-- save;
-- reload through `BACKEND.AUTO`;
-- compare deterministic generation;
-- verify all expected `mtp.*` tensors;
-- verify the vision tower remains in source precision;
-- verify the quantization metadata matches the runtime contract.
+- quantize with `quality_4bit()` and `max_quality_4bit()`;
+- save and reload through AUTO;
+- compare deterministic generation and perplexity;
+- verify `mtp.*`, vision precision, metadata, and kernel compatibility.
 
-#### C4. Package validation
+#### C4. Wheel and sdist validation
 
-Build both sdist and wheel artifacts and verify they contain:
+Build artifacts and verify that CUDA sources and CPU helpers are present, removed
+backend trees are absent, and a clean environment can JIT-compile the runtime.
 
-- `gptqmodel_ext/gptq_pro` CUDA/C++ sources;
-- `pack_block_cpu.cpp` and `floatx_cpu.cpp`;
-- no deleted backend source trees;
-- correct project URLs and optional-dependency metadata.
+### P1 — Ampere performance
 
-### P1 — performance
+#### K1. Measure and tune decode crossover
 
-#### K1. Dedicated decode kernel
+Benchmark `M` from 1 through at least 64 on RTX 3090 and A100. Replace the
+initial `M <= 4` rule with architecture/shape-aware thresholds only after stable
+measurements.
 
-Implement a fused dequantization GEMV or small-`M` kernel and dispatch below a
-measured crossover point. Single-token decode is primarily memory-bandwidth
-bound and should not use the same tile strategy as large prompt batches.
+#### K2. Profile the async pipeline
 
-#### K2. Ampere asynchronous pipeline
+Use Nsight Compute to verify:
 
-Add staged global-to-shared copies with `cp.async`, double or multi-buffering,
-and overlap between memory movement and MMA work.
+- global-load coalescing;
+- asynchronous-copy overlap;
+- shared-memory bank behavior;
+- Tensor Core utilization;
+- eligible warps and occupancy;
+- register spills and long-scoreboard stalls.
 
-#### K3. Vectorized data path
+#### K3. Add `ldmatrix` and shared-memory swizzling
 
-Evaluate:
+The current path still manually packs A fragments from shared memory. Evaluate a
+bank-conflict-safe `ldmatrix` layout and retain it only if profiler and numerical
+results justify the complexity.
 
-- 128-bit global loads;
-- `ldmatrix` shared-to-register movement;
-- fused bit manipulation/dequantization;
-- scale prefetching and reduced repeated staging.
+#### K4. Cache scales across K tiles
 
-Each change must be justified by profiler counters, not only kernel timing.
+Group sizes usually span several 16-wide K tiles. Reduce repeated scale staging
+by caching one group's scales in registers or a persistent shared region.
 
-#### K4. Multi-warp tiling and dispatch
+#### K5. Add tile families and autotuning
 
-Introduce multiple tile families for decode, medium batches, and prefill. Select
-using dimensions and measured architecture-specific crossovers. Avoid claiming
-one universal kernel configuration.
+Evaluate CTA shapes for:
 
-#### K5. Native BF16
+- decode and micro-batch;
+- medium batch;
+- long-prompt prefill;
+- narrow and wide output dimensions.
 
-Add a BF16 MMA path instead of unconditionally converting activations to FP16.
-Validate overflow-sensitive layers and compare accuracy and performance with the
-FP16 path.
+Autotuning must be cached and bounded so startup cost does not dominate normal
+use.
 
-#### K6. Benchmark protocol
+#### K6. Native BF16
 
-Check in a benchmark that records:
+Add BF16 MMA and output handling rather than converting all activations to FP16.
+Validate overflow-sensitive layers and compare quality and throughput.
 
-- GPU, driver, CUDA toolkit, PyTorch, and compiler versions;
-- model, sequence length, batch size, prompt/decode split;
-- warm-up and synchronization procedure;
-- median and percentile latency;
-- tokens/s;
-- peak allocated/reserved memory;
-- numerical error against the reference.
+#### K7. Kernel launch and graph integration
 
-External Marlin or ExLlama results may be included only when those dependencies
-are installed separately and clearly labeled as external baselines.
+Measure launch overhead during token generation. Evaluate CUDA Graph capture and
+persistent metadata without compromising dynamic-shape correctness.
 
 ### P2 — quantization quality
 
-#### Q1. Calibration guidance and fixtures
+#### Q1. Calibration fixtures
 
-Provide representative public calibration fixtures for coding, general text,
-multilingual text, and vision-language workloads. Measure sensitivity to sample
-count and sequence length.
+Provide public coding, general-text, multilingual, and vision-language fixtures.
+Measure sample-count and sequence-length sensitivity.
 
 #### Q2. Preset evaluation
 
-Evaluate `fast_4bit`, `quality_4bit`, and `max_quality_4bit` on the same models
-and tasks. Record quantization time, disk usage, perplexity/task quality, and
-runtime compatibility.
+For representative dense and MoE models, compare FP16/BF16 source,
+`fast_4bit(desc_act=False)`, `quality_4bit()`, and `max_quality_4bit()` using
+perplexity, tasks, deterministic prompts, and calibration time/memory.
 
-#### Q3. FOEM policy
+#### Q3. FOEM and rotation policy
 
-FOEM is available but not part of `max_quality_4bit()`. Determine whether it
-provides repeatable gains across model families before adding a named preset or
-enabling it by default.
+FOEM and rotation remain opt-in. Promote either into a named 4-bit preset only
+after repeatable improvements across multiple models and workloads.
 
-#### Q4. Low-bit runtime decision
+#### Q4. Selective precision recipes
 
-The repository exposes a 3-bit rotation recipe but has no 3-bit runtime. Choose
-one of two explicit directions:
+Add reproducible module-sensitivity tooling and documented BF16 preservation
+recipes for embeddings, output heads, recurrent helpers, expert routers, and
+model-specific outliers.
 
-1. add and validate a compatible 3-bit kernel; or
-2. keep the recipe as export-only and mark it experimental throughout the API.
+## Release gates
 
-Do not imply local inference support until one of those paths is complete.
+Before describing a release as production-ready:
 
-#### Q5. Model-specific mixed precision
+1. CUDA compilation succeeds from clean wheel/sdist installs;
+2. hardware validators pass on the advertised Ampere targets;
+3. numerical bounds pass across the support matrix;
+4. model round trips and generation checks pass;
+5. benchmark JSON and profiler summaries are checked in;
+6. quality regressions remain within documented thresholds;
+7. README claims match those artifacts exactly.
 
-Build reproducible sensitivity tooling for preserving selected embeddings,
-output heads, attention outputs, or expert projections in source precision.
-Store generated skip lists with model/config fingerprints so they cannot be
-silently reused on incompatible layouts.
-
-### P3 — maintainability and releases
-
-- Add a repository consistency test that rejects removed backend names in
-  package metadata and user-facing documentation.
-- Add link and command checks for Markdown.
-- Add a release checklist containing sdist/wheel inspection, clean-container
-  install, CUDA build, quantize/save/load, and documentation verification.
-- Record the upstream GPTQModel commit used for every sync.
-- Keep historical credits while clearly distinguishing inherited history from
-  code currently shipped.
-- Avoid publishing the compatibility distribution name to a public index unless
-  the release process explicitly addresses collision with upstream GPTQModel.
-
-## Recommended release gate
-
-A release should not be described as production-ready until all of the following
-are true:
-
-1. clean installation succeeds in the documented container;
-2. CUDA build and cache reuse pass on `sm_80` and `sm_86`;
-3. numerical reference tests pass across the advertised shape/group matrix;
-4. at least one dense and one MoE model complete quantize/save/reload/generate;
-5. Qwen multimodal validation includes a real image prompt;
-6. MTP preservation is checked from the saved safetensor index;
-7. benchmark methodology and raw results are committed;
-8. known limitations are repeated in release notes and model cards.
-
-## External references
-
-These are research or comparison references, not bundled components:
-
-- [GPTQ](https://arxiv.org/abs/2210.17323)
-- [Marlin](https://github.com/IST-DASLab/marlin)
-- [ExLlamaV2](https://github.com/turboderp-org/exllamav2)
-- [NVIDIA Ampere architecture](https://developer.nvidia.com/blog/nvidia-ampere-architecture-in-depth/)
-- [CUDA asynchronous copy](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#asynchronous-data-copies)
-- [QuIP](https://arxiv.org/abs/2307.13304)
-- [QuaRot](https://arxiv.org/abs/2404.00456)
-- [SpinQuant](https://arxiv.org/abs/2405.16406)
-- [SmoothQuant](https://arxiv.org/abs/2211.10438)
+Until then, GPTQ-Pro remains an experimental Ampere-focused quantization and
+kernel-engineering fork.
