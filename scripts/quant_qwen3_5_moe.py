@@ -1,103 +1,249 @@
 #!/usr/bin/env python3
-"""End-to-end GPTQ-Pro quantization for Qwen3.5-MoE (text or multimodal), preserving
-MTP (mtp.* passthrough) and the vision tower (kept at original precision).
+"""Quantize Qwen3.5/Qwen3.6 MoE checkpoints with the GPTQ-Pro recipe stack.
 
-Verified end-to-end on llmfan46/Qwen3.5-35B-A3B-...-Native-MTP-Preserved (multimodal MoE,
-40 layers x 256 experts): only model.language_model.layers.* is quantized to 4-bit GPTQ,
-while model.visual.* and mtp.* are carried through unquantized. On Ampere+ the GPTQ-Pro
-kernel is auto-selected at load (load with dtype=float16).
+Qwen3.6 intentionally reuses the Qwen3.5 Transformers model types. This driver
+supports the registered multimodal, flat text-only, and nested
+``language_model_only=true`` MoE layouts. Decoder projections and experts are
+quantized; vision modules, routers, recurrent helpers, norms, and ``mtp.*``
+auxiliary tensors remain in source precision.
 
-Validated recipe for a large multimodal MoE on <=24GB GPUs
-----------------------------------------------------------
-Run SINGLE-GPU with disk offload. Multi-GPU replicates the (256-expert) layer across cards
-during the calibration forward and OOMs on 24GB; a single GPU + offload avoids that entirely
-and is still fast (~1 min/layer at 16 image samples):
+For large multimodal MoE checkpoints on 24 GB cards, prefer one visible GPU plus
+``--offload-disk``. Multi-GPU forwarding can replicate a large expert layer and
+increase peak memory.
 
-  CUDA_VISIBLE_DEVICES=0 \\
-  PYTORCH_ALLOC_CONF=backend:native,expandable_segments:True,garbage_collection_threshold:0.8,max_split_size_mb:256 \\
-  python scripts/quant_qwen3_5_moe.py --model <hf_or_local> --out out-4bit \\
-         --calib image --nsample 16 --preset quality --offload-disk
+Example:
 
-Notes
------
-- --calib image uses Qwen-VL caption conversations (the modality the multimodal class expects).
-- --calib text works for text-only Qwen3.5 checkpoints; for an *offloaded multimodal* checkpoint
-  the text path currently hits an internal device-placement issue, so use image there.
-- MTP + vision are preserved regardless of calibration modality.
+  CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen3_5_moe.py \
+      --model <hf-or-local-checkpoint> --out qwen-moe-gptq-pro \
+      --calib auto --nsample 16 --preset quality --offload-disk --dry-run
 """
+
+from __future__ import annotations
+
 import argparse
-import os
+import json
+import re
+from pathlib import Path
 
 
-def _image_calibration(n_sample):
-    """Qwen-VL conversation calibration (image+caption). Self-contained (no test-tree dep)."""
+def _image_calibration(n_sample: int):
+    """Build Qwen-VL image/caption conversations for multimodal calibration."""
     from datasets import load_dataset
-    ds = load_dataset("laion/220k-GPT4Vision-captions-from-LIVIS", split=f"train[:{n_sample}]")
+
+    dataset = load_dataset(
+        "laion/220k-GPT4Vision-captions-from-LIVIS",
+        split=f"train[:{n_sample}]",
+    )
     return [
         [
-            {"role": "user", "content": [
-                {"type": "image", "image": s["url"]},
-                {"type": "text", "text": "generate a caption for this image"},
-            ]},
-            {"role": "assistant", "content": s["caption"]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": sample["url"]},
+                    {
+                        "type": "text",
+                        "text": "Generate a precise caption for this image.",
+                    },
+                ],
+            },
+            {"role": "assistant", "content": sample["caption"]},
         ]
-        for s in ds
+        for sample in dataset
     ]
 
 
-def main():
+def _text_calibration(path: Path | None, n_sample: int) -> list[str]:
+    if path is None:
+        seeds = [
+            "Explain the trade-offs between latency, memory use, and numerical accuracy in model quantization.",
+            "Write a Python function that validates a JSONL dataset and reports malformed rows.",
+            "Summarize how mixture-of-experts routing differs from a dense transformer layer.",
+            "Describe a careful debugging plan for a CUDA extension that fails only on one GPU architecture.",
+        ]
+        return [seeds[index % len(seeds)] for index in range(n_sample)]
+
+    rows: list[str] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(
+                    f"invalid JSON on calibration line {line_number}: {exc}"
+                ) from exc
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise SystemExit(
+                    f"calibration line {line_number} must contain a non-empty string field named 'text'"
+                )
+            rows.append(text)
+            if len(rows) == n_sample:
+                break
+
+    if len(rows) < n_sample:
+        raise SystemExit(
+            f"calibration file contains {len(rows)} usable rows, but --nsample requires {n_sample}"
+        )
+    return rows
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="HF id or local path of the unquantized checkpoint",
+    )
+    parser.add_argument("--out", required=True, help="fresh output directory")
+    parser.add_argument(
+        "--layers",
+        type=int,
+        default=0,
+        help="quantize only the first N decoder layers (0=all)",
+    )
+    parser.add_argument(
+        "--nsample", type=int, default=16, help="number of calibration samples"
+    )
+    parser.add_argument(
+        "--preset", default="quality", choices=["fast", "quality", "max_quality"]
+    )
+    parser.add_argument("--calib", default="auto", choices=["auto", "image", "text"])
+    parser.add_argument(
+        "--calibration-jsonl",
+        type=Path,
+        default=None,
+        help="optional JSONL with a non-empty 'text' field per row for text calibration",
+    )
+    parser.add_argument(
+        "--calib-device", default="cuda:0", help="device for calibration tensors"
+    )
+    parser.add_argument(
+        "--offload-disk", action="store_true", help="offload completed modules to disk"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="load and validate the layout, then exit"
+    )
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="opt in only for derivatives that genuinely require remote code",
+    )
+    args = parser.parse_args()
+
+    if args.layers < 0:
+        parser.error("--layers cannot be negative")
+    if args.nsample <= 0:
+        parser.error("--nsample must be greater than zero")
+    if args.calibration_jsonl is not None and not args.calibration_jsonl.is_file():
+        parser.error(f"calibration file does not exist: {args.calibration_jsonl}")
+    return args
+
+
+def main() -> None:
     from gptqmodel import BACKEND, GPTQModel, QuantizeConfig
     from gptqmodel.utils.model import MODALITY
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="HF id or local path of the unquantized model")
-    ap.add_argument("--out", required=True, help="output dir for the quantized model")
-    ap.add_argument("--layers", type=int, default=0, help="quantize only first N decoder layers (0=all)")
-    ap.add_argument("--nsample", type=int, default=16, help="calibration samples")
-    ap.add_argument("--preset", default="quality", choices=["fast", "quality", "max_quality"])
-    ap.add_argument("--calib", default="image", choices=["image", "text"])
-    ap.add_argument("--calib-device", default="cuda:0", help="device for calibration data tensors")
-    ap.add_argument("--offload-disk", action="store_true", help="offload to disk to lower CPU RAM")
-    args = ap.parse_args()
+    args = _parse_args()
+    output_path = Path(args.out)
+    if output_path.is_dir() and any(output_path.iterdir()):
+        raise SystemExit(f"output directory is not empty: {output_path}")
 
-    qcfg = {
-        "fast": lambda: QuantizeConfig(bits=4, group_size=128, sym=True),
+    quantize_config = {
+        "fast": lambda: QuantizeConfig.fast_4bit(group_size=128, desc_act=False),
         "quality": lambda: QuantizeConfig.quality_4bit(group_size=128),
         "max_quality": lambda: QuantizeConfig.max_quality_4bit(group_size=128),
     }[args.preset]()
-    if args.offload_disk:
-        qcfg.offload_to_disk = True
-    qcfg.calibration_data_device = args.calib_device
+    quantize_config.offload_to_disk = args.offload_disk
+    quantize_config.calibration_data_device = args.calib_device
 
-    model = GPTQModel.load(args.model, qcfg, trust_remote_code=True)
-    print(f"[ok] {model.__class__.__name__}  modality={model.modality}")
+    model = GPTQModel.load(
+        args.model,
+        quantize_config,
+        trust_remote_code=args.trust_remote_code,
+    )
+    supported_definitions = {
+        "Qwen3_5_MoeQModel",
+        "Qwen3_5_MoeTextQModel",
+        "Qwen3_5_MoeLanguageModelOnlyQModel",
+    }
+    if model.__class__.__name__ not in supported_definitions:
+        raise SystemExit(
+            f"unexpected model definition {model.__class__.__name__}; expected one of {sorted(supported_definitions)}"
+        )
 
-    if args.layers and args.layers > 0:
-        ln = model.extract_layers_node()
-        ln = ln[0] if isinstance(ln, (list, tuple)) else ln
-        tc = getattr(model.config, "text_config", None)
-        total = int(getattr(tc, "num_hidden_layers", 0) or getattr(model.config, "num_hidden_layers", 0) or (args.layers + 1))
-        model.quantize_config.dynamic = {f"-:^{ln}\\.{i}\\.": {} for i in range(args.layers, total)}
-        print(f"[ok] limiting to first {args.layers}/{total} layers under '{ln}'")
+    layer_roots = model.extract_layers_node()
+    print(
+        f"[ok] definition={model.__class__.__name__} modality={model.modality} layers={layer_roots}"
+    )
 
-    if args.calib == "image" or MODALITY.IMAGE_TO_TEXT in model.modality:
-        calib = _image_calibration(args.nsample)
-    else:
-        calib = ["The quick brown fox jumps over the lazy dog. " * 40 for _ in range(args.nsample)]
-    print(f"[ok] {len(calib)} {args.calib} calibration samples")
+    if args.layers:
+        layer_root = (
+            layer_roots[0] if isinstance(layer_roots, (list, tuple)) else layer_roots
+        )
+        text_config = getattr(model.config, "text_config", None)
+        total_layers = int(
+            getattr(text_config, "num_hidden_layers", 0)
+            or getattr(model.config, "num_hidden_layers", 0)
+            or (args.layers + 1)
+        )
+        if args.layers > total_layers:
+            raise SystemExit(
+                f"--layers={args.layers} exceeds the model's {total_layers} decoder layers"
+            )
+        escaped_layer_root = re.escape(layer_root)
+        model.quantize_config.dynamic = {
+            f"-:^{escaped_layer_root}\\.{index}\\.": {}
+            for index in range(args.layers, total_layers)
+        }
+        print(
+            f"[ok] limiting quantization to first {args.layers}/{total_layers} layers"
+        )
 
-    model.quantize(calib, batch_size=1, backend=BACKEND.AUTO)
+    is_multimodal = MODALITY.IMAGE_TO_TEXT in model.modality
+    calibration_mode = args.calib
+    if calibration_mode == "auto":
+        calibration_mode = "image" if is_multimodal else "text"
+    if calibration_mode == "image" and not is_multimodal:
+        raise SystemExit(
+            "image calibration requires a multimodal qwen3_5_moe checkpoint"
+        )
+    if calibration_mode == "text" and is_multimodal:
+        raise SystemExit(
+            "text-only calibration is not supported by this driver for multimodal Qwen3.5/Qwen3.6 MoE; use --calib image"
+        )
 
-    os.makedirs(args.out, exist_ok=True)
-    model.save(args.out)
+    if args.dry_run:
+        print("[ok] dry-run validation passed; quantization was not started")
+        return
+
+    calibration = (
+        _image_calibration(args.nsample)
+        if calibration_mode == "image"
+        else _text_calibration(args.calibration_jsonl, args.nsample)
+    )
+    print(f"[ok] prepared {len(calibration)} {calibration_mode} calibration samples")
+
+    model.quantize(calibration, batch_size=1, backend=BACKEND.AUTO)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    model.save(str(output_path))
+
     import transformers
-    for name in ("AutoTokenizer", "AutoProcessor"):
+
+    for auto_class_name in ("AutoTokenizer", "AutoProcessor"):
         try:
-            getattr(transformers, name).from_pretrained(args.model, trust_remote_code=True).save_pretrained(args.out)
-            print(f"[ok] {name} saved")
-        except Exception as e:
-            print(f"[warn] {name}: {e}")
-    print(f"[DONE] quantized model -> {args.out}")
+            auto_class = getattr(transformers, auto_class_name)
+            auto_class.from_pretrained(
+                args.model,
+                trust_remote_code=args.trust_remote_code,
+            ).save_pretrained(str(output_path))
+            print(f"[ok] {auto_class_name} saved")
+        except Exception as exc:
+            print(f"[warn] {auto_class_name}: {exc}")
+
+    print(f"[done] quantized model -> {output_path}")
 
 
 if __name__ == "__main__":

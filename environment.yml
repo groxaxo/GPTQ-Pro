@@ -1,4 +1,4 @@
-name: gptq-pro-vllm
+name: gptq-pro
 channels:
   - conda-forge
 dependencies:
