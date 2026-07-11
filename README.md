@@ -21,7 +21,7 @@ The Python distribution and import names remain **`GPTQModel`** and
 | Checkpoint formats | `FORMAT.GPTQ`, `FORMAT.GPTQ_V2` |
 | Runtime selectors | `BACKEND.AUTO`, `BACKEND.GPTQ_PRO` |
 | Runtime platform | Linux + NVIDIA CUDA, compute capability 8.0 or newer |
-| Runtime weights | Symmetric 4-bit GPTQ, `desc_act=False`, `int32` source packing |
+| Runtime weights | Symmetric 4-bit GPTQ, `desc_act=False`, native `int32 qweight` packing |
 | Runtime activations | FP16; non-FP16 inputs are converted to FP16 |
 | Group sizes | `-1`, `16`, `32`, `64`, `128`, `256`, `512`, `1024` |
 | Shape constraints | input features divisible by 16; output features divisible by 8 |
@@ -39,17 +39,18 @@ supported by the GPTQ-Pro runtime.
 
 ## Ampere kernel architecture
 
-`gptqmodel_ext/gptq_pro/` now contains three dispatch paths:
+`gptqmodel_ext/gptq_pro/` contains three dispatch paths:
 
 1. **Decode / very small batches (`M <= 4`)**
    - one CUDA thread computes one output column;
-   - packed-weight reads are coalesced across each warp;
+   - native `qweight` reads are coalesced across each warp;
+   - four adjacent activation pairs are decoded from each GPTQ `int32` word;
    - FP16 dequantization is preserved before FP32 accumulation;
    - designed for the memory-bandwidth-bound token-generation regime.
 2. **Aligned medium-batch and prefill GEMM**
    - four warps per CTA, producing a `16 × 256` output region;
    - double-buffered `cp.async` global-to-shared pipeline;
-   - coalesced 16-byte activation, packed-weight, and scale copies;
+   - coalesced 16-byte activation, native-qweight, and scale copies;
    - Tensor Core `mma.sync.m16n8k16` with FP32 accumulation;
    - LOP3-assisted INT4-to-FP16 fragment conversion;
    - vectorized FP16 output stores.
@@ -57,6 +58,11 @@ supported by the GPTQ-Pro runtime.
    - retains the validator-backed one-warp implementation;
    - handles compatible edge shapes that do not satisfy the optimized path's
      `N % 16 == 0` requirement.
+
+All three paths consume the checkpoint's original `int32 qweight` directly. The
+runtime no longer materializes a second pair-packed weight tensor, avoiding a
+persistent duplicate of the model's quantized weights and eliminating a packing
+transform during module initialization.
 
 `AUTO` selects the small-`M` kernel first, then the pipelined Tensor Core path,
 then the general fallback. Experts can force a path for parity testing:
@@ -202,7 +208,7 @@ The benchmark:
 - reports effective dense TFLOP/s and a conservative bandwidth lower bound;
 - compares AUTO against forced specialized and legacy modes;
 - checks a column subset against a PyTorch FP32 reference using FP16-dequantized
-  weights;
+  native `qweight` values;
 - records GPU, compute capability, PyTorch, and CUDA runtime information.
 
 Commit raw JSON results when making performance claims. Use Nsight Compute to
@@ -279,8 +285,14 @@ pytest -q \
   tests/test_extension_registry.py
 ```
 
-The CUDA compile workflow builds the standalone validator for `sm_80`, `sm_86`,
-`sm_87`, and forward-compatible PTX. On a real GPU, build and run the validator:
+The kernel CI performs three independent gates:
+
+1. targeted Ruff/style and Python syntax checks;
+2. standalone CUDA compilation for `sm_80`, `sm_86`, `sm_87`, and PTX;
+3. compilation and import of the actual PyTorch C++/CUDA binding, followed by
+   CPU packing/dispatch tests.
+
+On a real GPU, build and run the standalone numerical validator:
 
 ```bash
 cd gptqmodel_ext/gptq_pro
