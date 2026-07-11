@@ -22,6 +22,7 @@ from .rocm import IS_ROCM
 
 log = setup_logger()
 
+_GPTQ_PRO_EXTENSION_NAME = "gptqmodel_gptq_pro_kernels_v2"
 _GPTQ_PRO_LOCK = threading.Lock()
 _GPTQ_PRO_MODULE = None
 _GPTQ_PRO_INITIALISED = False
@@ -50,10 +51,10 @@ def _prepare_build_directory(verbose: bool) -> str:
 
     build_dir_env = os.getenv("GPTQMODEL_EXT_BUILD")
     if build_dir_env:
-        build_directory = Path(build_dir_env) / "gptqmodel_gptq_pro_kernels"
+        build_directory = Path(build_dir_env) / _GPTQ_PRO_EXTENSION_NAME
     else:
         build_directory = Path(
-            _get_build_directory("gptqmodel_gptq_pro_kernels", verbose=verbose)
+            _get_build_directory(_GPTQ_PRO_EXTENSION_NAME, verbose=verbose)
         )
 
     if not _GPTQ_PRO_BUILD_PREPARED and build_directory.exists():
@@ -71,7 +72,7 @@ def _build_gptq_pro_extension(verbose: bool):
 
     build_directory = _prepare_build_directory(verbose=verbose)
     return load(
-        name="gptqmodel_gptq_pro_kernels",
+        name=_GPTQ_PRO_EXTENSION_NAME,
         sources=[str(source_cpp), str(source_cu)],
         extra_cflags=["-O3", "-std=c++17"],
         extra_cuda_cflags=[
@@ -112,7 +113,7 @@ def ensure_gptq_pro_loaded(*, verbose: Optional[bool] = None):
 
         errors = []
         try:
-            _GPTQ_PRO_MODULE = load_extension_module("gptqmodel_gptq_pro_kernels")
+            _GPTQ_PRO_MODULE = load_extension_module(_GPTQ_PRO_EXTENSION_NAME)
             gptq_pro_import_exception = None
             _GPTQ_PRO_INITIALISED = True
             return _GPTQ_PRO_MODULE
