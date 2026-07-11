@@ -268,6 +268,15 @@ __device__ __forceinline__ void store_mma_output(
                 *reinterpret_cast<half2*>(&C[m1 * N + n0]) =
                     __floats2half2_rn(RC[j][2], RC[j][3]);
             }
+        } else if (n0 < N) {
+            // The optimized path always has even N. This scalar tail keeps the
+            // general-shape fallback correct for standalone odd-N validation.
+            if (m0 < M) {
+                C[m0 * N + n0] = __float2half_rn(RC[j][0]);
+            }
+            if (m1 < M) {
+                C[m1 * N + n0] = __float2half_rn(RC[j][2]);
+            }
         }
     }
 }
@@ -293,8 +302,7 @@ void gptq_pro_gemv_kernel(
         return;
     }
 
-    const half2* a_pairs =
-        reinterpret_cast<const half2*>(&A[m * K]);
+    const half2* a_pairs = reinterpret_cast<const half2*>(&A[m * K]);
     const int groups = (K + group_size - 1) / group_size;
     float accumulator = 0.0f;
 
@@ -302,7 +310,7 @@ void gptq_pro_gemv_kernel(
         const int k_begin = group * group_size;
         const int k_end_candidate = k_begin + group_size;
         const int k_end = k_end_candidate < K ? k_end_candidate : K;
-        const float scale = __half2float(S[group * N + n]);
+        const half2 scale2 = __half2half2(S[group * N + n]);
         const int pair_begin = k_begin >> 1;
         const int pair_end = k_end >> 1;
 
@@ -311,10 +319,14 @@ void gptq_pro_gemv_kernel(
             const uint8_t packed = B_packed[pair * N + n];
             const int weight0 = static_cast<int>(packed & 0x0Fu) - 8;
             const int weight1 = static_cast<int>((packed >> 4) & 0x0Fu) - 8;
-            accumulator = fmaf(
-                activation.x, scale * static_cast<float>(weight0), accumulator);
-            accumulator = fmaf(
-                activation.y, scale * static_cast<float>(weight1), accumulator);
+            const half2 signed_weights = __floats2half2_rn(
+                static_cast<float>(weight0), static_cast<float>(weight1));
+            const float2 dequantized =
+                __half22float2(__hmul2(scale2, signed_weights));
+            accumulator =
+                fmaf(activation.x, dequantized.x, accumulator);
+            accumulator =
+                fmaf(activation.y, dequantized.y, accumulator);
         }
     }
 
@@ -405,7 +417,7 @@ void gptq_pro_gemm_kernel_ampere(
             lane,
             RC);
         // No thread may overwrite this buffer until every warp has finished
-        // reading the shared A tile.
+        // reading the common A tile.
         __syncthreads();
         read_buffer = write_buffer;
     }
