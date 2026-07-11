@@ -1,6 +1,7 @@
 name: Kernel Format Diagnostics
 
 on:
+  pull_request:
   push:
     branches:
       - perf/ampere-kernel-pipeline
