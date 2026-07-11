@@ -28,13 +28,17 @@ from gptqmodel.utils.gptq_pro import ensure_gptq_pro_loaded
 def parse_int_list(value: str) -> list[int]:
     values = [int(item.strip()) for item in value.split(",") if item.strip()]
     if not values or any(item <= 0 for item in values):
-        raise argparse.ArgumentTypeError("expected a comma-separated list of positive integers")
+        raise argparse.ArgumentTypeError(
+            "expected a comma-separated list of positive integers"
+        )
     return values
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--m-values", type=parse_int_list, default=parse_int_list("1,4,8,16,64,256"))
+    parser.add_argument(
+        "--m-values", type=parse_int_list, default=parse_int_list("1,4,8,16,64,256")
+    )
     parser.add_argument("--n", type=int, default=4096)
     parser.add_argument("--k", type=int, default=4096)
     parser.add_argument("--group-size", type=int, default=128)
@@ -75,7 +79,9 @@ def dequantize_reference(
     k: int,
     group_size: int,
 ) -> torch.Tensor:
-    values = torch.empty((k, packed.shape[1]), device=packed.device, dtype=torch.float16)
+    values = torch.empty(
+        (k, packed.shape[1]), device=packed.device, dtype=torch.float16
+    )
     values[0::2] = (packed & 0x0F).to(torch.float16) - 8
     values[1::2] = ((packed >> 4) & 0x0F).to(torch.float16) - 8
     group_index = torch.arange(k, device=packed.device) // group_size
