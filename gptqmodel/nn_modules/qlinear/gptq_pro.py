@@ -21,29 +21,20 @@ from ...utils.gptq_pro import (
 from ...utils.rocm import IS_ROCM
 
 
-# GPTQ-Pro is this fork's custom Ampere/Hopper Tensor-Core INT4 kernel and the
-# UNCONDITIONAL default for symmetric 4-bit FP16 GPTQ wherever it can run. Priority
-# 120 puts it above every other GPTQ-method kernel -- HFKernel/TorchAten (110,
-# CPU-only), Machete (100), Marlin (90) -- so the auto-selector always prefers it on
-# its supported config. This is a default-by-policy choice (this kernel is the fork's
-# reason to exist), NOT a benchmarked-performance claim: it is still a Tensor-Core
-# scaffold (one warp/CTA; no cp.async / ldmatrix / multi-stage pipeline; scalar INT4
-# decode) with no in-repo throughput benchmark, so it may trail Marlin/Machete on
-# batched/prefill until optimized (see K7 in docs/ASSESSMENT_AND_ROADMAP.md).
-#
-# validate_device()/_validate() still gate it to CUDA sm_80+ / Linux / FP16 / sym /
-# 4-bit / no-desc_act; for anything it cannot serve, validate() returns False (never
-# raises -- BaseQuantLinear._validate_shared catches the device check) and the
-# auto-selector falls through to the next kernel automatically. To force a different
-# kernel, request it explicitly (e.g. backend=BACKEND.MARLIN).
+# GPTQ-Pro is the only inference kernel shipped by this fork. Priority 120 keeps
+# it first in the local AUTO registry wherever its validation contract is met.
+# This is a repository policy, not a benchmarked-performance claim: the kernel
+# remains a Tensor-Core scaffold (one warp/CTA, no cp.async/ldmatrix/multi-stage
+# pipeline, scalar INT4 decode, and no dedicated GEMV path). Unsupported
+# configurations fail validation cleanly; because there is no bundled fallback
+# kernel, callers must use a compatible checkpoint/device or another project.
 _GPTQ_PRO_AUTO_PRIORITY = 120
 
 
 class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
-    # Priority 120 (top of the GPTQ kernel stack) so GPTQ-Pro is the unconditional
-    # auto-selection default wherever validate_device() passes. See _GPTQ_PRO_AUTO_PRIORITY.
+    # Priority 120 keeps GPTQ-Pro first in the single-backend AUTO registry.
     SUPPORTS_FORMATS = {FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY, FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY}
     SUPPORTS_BITS = [4]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128, 256, 512, 1024]
