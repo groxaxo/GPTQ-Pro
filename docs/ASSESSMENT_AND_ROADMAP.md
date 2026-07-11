@@ -15,7 +15,7 @@ GPTQ-Pro is a deliberately narrow research fork:
 - inference backend: GPTQ-Pro only;
 - primary hardware: Linux NVIDIA GPUs, especially Ampere;
 - local runtime format: symmetric 4-bit, `desc_act=False`, FP16 activations,
-  `int32` source packing.
+  native `int32 qweight` packing.
 
 The runtime is no longer a single one-warp kernel. AUTO now dispatches among:
 
@@ -23,11 +23,13 @@ The runtime is no longer a single one-warp kernel. AUTO now dispatches among:
 - a four-warp, double-buffered `cp.async` Tensor Core kernel;
 - a general-shape correctness fallback.
 
-This closes several obvious Ampere design gaps, but implementation is not the
-same as proof. CUDA compilation is continuously checked; real GPU execution,
-profiler evidence, numerical matrices, and checked-in benchmark results remain
-release gates. Until those gates pass, GPTQ-Pro should not be described as
-benchmark-leading or production-proven.
+Every path consumes the checkpoint's native `qweight` tensor directly, avoiding
+a second persistent copy of quantized model weights. This closes several obvious
+Ampere design and memory-footprint gaps, but implementation is not the same as
+proof. CUDA compilation is continuously checked; real GPU execution, profiler
+evidence, numerical matrices, and checked-in benchmark results remain release
+gates. Until those gates pass, GPTQ-Pro should not be described as benchmark-
+leading or production-proven.
 
 ## Current implementation
 
@@ -87,7 +89,7 @@ Constraints:
 - FP16 activations;
 - symmetric 4-bit weights;
 - `desc_act=False` and sequential `g_idx`;
-- `int32` source packing;
+- native GPTQ `int32 qweight`;
 - input features divisible by 16;
 - output features divisible by 8;
 - group size `-1` or `16`, `32`, `64`, `128`, `256`, `512`, `1024`.
@@ -99,13 +101,12 @@ The extension contains native SASS for `sm_80`, `sm_86`, and `sm_87`, plus
 
 #### Small-`M` decode path
 
-For `M <= 4` and pair-compatible `K`, AUTO selects a dedicated GEMV-style
+For `M <= 4` and qword-compatible `K`, AUTO selects a dedicated GEMV-style
 kernel:
 
 - one thread owns one output column;
-- packed-weight loads are contiguous across each warp;
-- scale loads are contiguous across output columns;
-- adjacent activation/weight pairs use `half2`;
+- native qweight and scale loads are contiguous across each warp;
+- each `int32` word supplies four adjacent `half2` activation/weight pairs;
 - weight dequantization rounds to FP16 before FP32 accumulation, matching the
   runtime's Tensor Core numerical contract.
 
@@ -120,10 +121,14 @@ For aligned `K` and `N % 16 == 0`, AUTO selects a CTA tile that uses:
 - two shared-memory stages;
 - `cp.async` 16-byte global-to-shared copies;
 - overlap of the next K tile's movement with current-tile MMA work;
-- a shared A tile and warp-private B/scale tiles;
+- a shared A tile and warp-private native-qweight/scale tiles;
 - `mma.sync.m16n8k16` with FP32 accumulation;
 - LOP3-assisted INT4-to-FP16 conversion;
 - vectorized `half2` stores.
+
+A 16-wide K tile reads two native qweight rows. Each lane moves four adjacent
+`int32` words, preserving coalesced 16-byte transactions without repacking the
+model.
 
 #### General-shape fallback
 
@@ -138,15 +143,24 @@ a silent shape-support regression.
 Forced modes fail on incompatible shapes. The override is intended for testing,
 not as a normal user requirement.
 
-### 5. Weight repacking
+### 5. Native qweight memory path
 
-GPTQ source tensors store eight nibbles in each `int32` word. The runtime now
-reinterprets those words as four bytes and transposes the byte axis into the
-kernel's pair-packed layout. This avoids the old broadcasted eight-nibble
-intermediate and substantially reduces temporary packing memory.
+GPTQ stores eight K-axis nibbles in every `int32 qweight` word. Earlier versions
+of this optimization branch materialized a second pair-packed byte tensor. The
+final design removes that buffer: decode, Tensor Core, and legacy kernels all
+extract the required bytes from native qweight words directly.
 
-Channelwise `group_size=-1` is normalized to `in_features` before validating
-`g_idx` and invoking the CUDA kernel.
+Benefits:
+
+- no persistent duplicate of quantized weights;
+- no module-initialization repacking transform;
+- no eight-times-larger temporary nibble broadcast;
+- unchanged global bytes per 16-wide K tile;
+- simpler checkpoint/runtime memory accounting.
+
+The historical byte-view helper remains available for inspection tooling but is
+not used by inference. Channelwise `group_size=-1` is normalized to
+`in_features` before validating `g_idx` and invoking CUDA.
 
 ### 6. Extension and build validation
 
@@ -155,10 +169,15 @@ There are two extension mechanisms:
 1. `gptqmodel.extension` manages generic CPU helpers;
 2. `ensure_gptq_pro_loaded()` loads or JIT-compiles the CUDA runtime.
 
-The CUDA compile workflow builds the standalone validator for native
-`sm_80`/`sm_86`/`sm_87` and forward-compatible PTX. Compilation proves that the
-source is accepted by the configured CUDA toolchain; it does not execute the
-kernel.
+Kernel CI contains independent gates for:
+
+- targeted Python lint, formatting, and syntax;
+- standalone CUDA compilation for native `sm_80`/`sm_86`/`sm_87` plus PTX;
+- compilation and import of the actual PyTorch C++/CUDA extension binding;
+- CPU tests for qweight layout and dispatch contracts.
+
+Compilation proves that source and binding signatures are accepted by the
+configured toolchains; it does not execute CUDA kernels.
 
 The standalone validator covers:
 
@@ -167,9 +186,10 @@ The standalone validator covers:
 - forced pipelined Ampere mode;
 - AUTO decode and AUTO GEMM selection;
 - M and N tails;
-- odd edge shapes through the legacy fallback.
+- odd edge shapes through the legacy fallback;
+- native qweight extraction in every path.
 
-Those checks must still be run on real hardware.
+Those numerical checks must still be run on real hardware.
 
 ### 7. Raw benchmark
 
@@ -184,7 +204,10 @@ Those checks must still be run on real hardware.
 - numerical error and cosine similarity against a PyTorch reference;
 - forced AUTO/GEMV/Ampere/legacy comparisons where applicable.
 
-Performance claims should include the raw JSON output and the exact commit.
+The benchmark generates and dequantizes native `int32 qweight`, disables TF32
+for the FP32 reference, and includes only one quantized-weight tensor in its
+bandwidth accounting. Performance claims should include raw JSON and the exact
+commit.
 
 ### 8. Qwen 3.5 / Qwen 3.6
 
@@ -201,9 +224,11 @@ See [`QWEN35_QWEN36.md`](QWEN35_QWEN36.md).
 
 ### Proven by checked-in automation
 
-- Python packing-layout and kernel-mode normalization tests;
-- source-contract tests for the specialized dispatch paths;
-- CUDA compilation for Ampere SASS targets and PTX;
+- targeted Python lint/format/syntax checks;
+- qweight layout and kernel-mode normalization tests;
+- source-contract tests for specialized dispatch and no duplicate weight buffer;
+- standalone CUDA compilation for Ampere SASS targets and PTX;
+- actual PyTorch extension compilation/import gate;
 - Qwen routing and preservation invariants;
 - package/manifest consistency checks.
 
