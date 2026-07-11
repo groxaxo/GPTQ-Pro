@@ -98,7 +98,7 @@ jobs:
           /tmp/gptq-pro-ci/bin/python -m pip install --upgrade pip setuptools wheel ninja
           /tmp/gptq-pro-ci/bin/python -m pip install \
             --index-url https://download.pytorch.org/whl/cu126 \
-            "torch>=2.8.0"
+            torch==2.8.0
           /tmp/gptq-pro-ci/bin/python -m pip install pytest
       - name: Compile and import PyTorch extension
         run: |
@@ -135,4 +135,5 @@ jobs:
       - name: Run CPU packing and dispatch contracts
         run: |
           /tmp/gptq-pro-ci/bin/python -m pytest -q \
+            --confcutdir=tests/kernels \
             tests/kernels/test_gptq_pro_ampere_pipeline.py
