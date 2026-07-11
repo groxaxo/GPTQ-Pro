@@ -21,20 +21,17 @@ from ...utils.gptq_pro import (
 from ...utils.rocm import IS_ROCM
 
 
-# GPTQ-Pro is the only inference kernel shipped by this fork. Priority 120 keeps
-# it first in the local AUTO registry wherever its validation contract is met.
-# This is a repository policy, not a benchmarked-performance claim: the kernel
-# remains a Tensor-Core scaffold (one warp/CTA, no cp.async/ldmatrix/multi-stage
-# pipeline, scalar INT4 decode, and no dedicated GEMV path). Unsupported
-# configurations fail validation cleanly; because there is no bundled fallback
-# kernel, callers must use a compatible checkpoint/device or another project.
+# GPTQ-Pro is the only inference kernel shipped by this fork. AUTO dispatches
+# small-M workloads to a coalesced decode kernel, aligned GEMMs to a four-warp
+# double-buffered cp.async Tensor Core path, and unusual compatible shapes to a
+# validator-backed general-shape fallback. Priority 120 keeps this runtime first
+# in the local single-backend registry; it is not a claim of benchmark leadership.
 _GPTQ_PRO_AUTO_PRIORITY = 120
 
 
 class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
-    # Priority 120 keeps GPTQ-Pro first in the single-backend AUTO registry.
     SUPPORTS_FORMATS = {
         FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY,
         FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY,
@@ -152,9 +149,14 @@ class GptqProQuantLinear(PackableQuantLinear):
             and (effective_group_size % 16) != 0
         ):
             return False, NotImplementedError(
-                f"{cls} requires group_size to be a positive multiple of 16: actual group_size = `{effective_group_size}`"
+                f"{cls} requires group_size to be a positive multiple of 16: "
+                f"actual group_size = `{effective_group_size}`"
             )
         return True, None
+
+    @property
+    def effective_group_size(self) -> int:
+        return self.in_features if self.group_size == -1 else self.group_size
 
     def post_init(self):
         ensure_gptq_pro_loaded()
@@ -170,7 +172,7 @@ class GptqProQuantLinear(PackableQuantLinear):
                 device=self.g_idx.device,
                 dtype=self.g_idx.dtype,
             )
-            // self.group_size
+            // self.effective_group_size
         )
         if not torch.equal(self.g_idx, expected_g_idx):
             raise ValueError(
@@ -186,10 +188,10 @@ class GptqProQuantLinear(PackableQuantLinear):
         super().post_init()
 
     def list_buffers(self) -> List:
-        buf = super().list_buffers()
+        buffers = super().list_buffers()
         if hasattr(self, "b_packed") and self.b_packed is not None:
-            buf.append(self.b_packed)
-        return buf
+            buffers.append(self.b_packed)
+        return buffers
 
     def forward(self, x: torch.Tensor):
         if x.shape[0] == 0:
@@ -201,7 +203,8 @@ class GptqProQuantLinear(PackableQuantLinear):
         x = x.reshape(-1, x.shape[-1])
         if x.shape[-1] != self.in_features:
             raise ValueError(
-                f"GPTQ-Pro backend expected input dim {self.in_features}, got {x.shape[-1]}."
+                f"GPTQ-Pro backend expected input dim {self.in_features}, "
+                f"got {x.shape[-1]}."
             )
 
         if x.dtype != torch.float16:
@@ -211,7 +214,7 @@ class GptqProQuantLinear(PackableQuantLinear):
             input=x.contiguous(),
             b_packed=self.b_packed,
             scales=self.scales,
-            group_size=self.group_size,
+            group_size=self.effective_group_size,
         )
 
         if self.bias is not None:
