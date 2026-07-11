@@ -1,4 +1,4 @@
-name: GPTQ-Pro CUDA Compile
+name: GPTQ-Pro Kernel CI
 
 on:
   pull_request:
@@ -7,12 +7,17 @@ on:
       - "gptqmodel/utils/gptq_pro.py"
       - "gptqmodel/nn_modules/qlinear/gptq_pro.py"
       - "scripts/benchmark_gptq_pro_kernel.py"
+      - "tests/kernels/test_gptq_pro_ampere_pipeline.py"
       - ".github/workflows/gptq-pro-cuda-compile.yml"
   push:
     branches:
       - perf/ampere-kernel-pipeline
     paths:
       - "gptqmodel_ext/gptq_pro/**"
+      - "gptqmodel/utils/gptq_pro.py"
+      - "gptqmodel/nn_modules/qlinear/gptq_pro.py"
+      - "scripts/benchmark_gptq_pro_kernel.py"
+      - "tests/kernels/test_gptq_pro_ampere_pipeline.py"
       - ".github/workflows/gptq-pro-cuda-compile.yml"
   workflow_dispatch:
 
@@ -20,7 +25,34 @@ permissions:
   contents: read
 
 jobs:
-  compile:
+  python-style:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install Ruff
+        run: python -m pip install ruff==0.13.0
+      - name: Check modified Python sources
+        run: |
+          ruff check \
+            gptqmodel/utils/gptq_pro.py \
+            gptqmodel/nn_modules/qlinear/gptq_pro.py \
+            scripts/benchmark_gptq_pro_kernel.py \
+            tests/kernels/test_gptq_pro_ampere_pipeline.py
+          ruff format --check \
+            gptqmodel/utils/gptq_pro.py \
+            gptqmodel/nn_modules/qlinear/gptq_pro.py \
+            scripts/benchmark_gptq_pro_kernel.py \
+            tests/kernels/test_gptq_pro_ampere_pipeline.py
+          python -m py_compile \
+            gptqmodel/utils/gptq_pro.py \
+            gptqmodel/nn_modules/qlinear/gptq_pro.py \
+            scripts/benchmark_gptq_pro_kernel.py \
+            tests/kernels/test_gptq_pro_ampere_pipeline.py
+
+  cuda-compile:
     runs-on: ubuntu-24.04
     container:
       image: nvidia/cuda:12.6.3-devel-ubuntu22.04
