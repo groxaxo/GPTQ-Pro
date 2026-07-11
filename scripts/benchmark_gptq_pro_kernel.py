@@ -202,6 +202,9 @@ def main() -> None:
         raise SystemExit(f"compute capability 8.0+ is required, got {major}.{minor}")
 
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.set_float32_matmul_precision("highest")
     device = torch.device("cuda:0")
     module = ensure_gptq_pro_loaded(verbose=True)
     properties = torch.cuda.get_device_properties(device)
