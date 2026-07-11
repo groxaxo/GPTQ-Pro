@@ -165,6 +165,11 @@ class GptqProQuantLinear(PackableQuantLinear):
                 "GPTQ-Pro backend requires CUDA-resident packed weights before post_init()."
             )
 
+        if not self.qweight.is_contiguous():
+            self.qweight = self.qweight.contiguous()
+        if not self.scales.is_contiguous():
+            self.scales = self.scales.contiguous()
+
         expected_g_idx = (
             torch.arange(
                 self.in_features,
