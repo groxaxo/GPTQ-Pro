@@ -116,12 +116,12 @@ def test_ampere_source_contains_specialized_dispatch_and_pipeline():
 
 
 def test_runtime_uses_native_qweight_without_duplicate_buffer():
-    qlinear = (
-        ROOT / "gptqmodel/nn_modules/qlinear/gptq_pro.py"
-    ).read_text(encoding="utf-8")
-    binding = (
-        ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp"
-    ).read_text(encoding="utf-8")
+    qlinear = (ROOT / "gptqmodel/nn_modules/qlinear/gptq_pro.py").read_text(
+        encoding="utf-8"
+    )
+    binding = (ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp").read_text(
+        encoding="utf-8"
+    )
 
     assert "qweight=self.qweight" in qlinear
     assert "b_packed" not in qlinear
