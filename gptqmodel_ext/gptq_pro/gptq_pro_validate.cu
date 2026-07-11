@@ -7,7 +7,7 @@
  *
  * Run on an Ampere-or-newer CUDA GPU. The harness checks the LOP3 fragment
  * decoder and compares every dispatch path with a scalar FP16-dequant/FP32-
- * accumulation reference, including edge shapes handled by the legacy path.
+ * accumulation reference using GPTQ's native int32 qweight layout.
  */
 
 #include "gptq_pro_kernel.cuh"
@@ -82,7 +82,8 @@ bool validate_fragment_decode() {
         const uint16_t w3 = static_cast<uint16_t>((lane + 11) & 0xF);
         packed[lane] = static_cast<uint16_t>(
             w0 | (w1 << 4) | (w2 << 8) | (w3 << 12));
-        scales[lane] = __float2half(0.015625f * static_cast<float>(1 + lane % 4));
+        scales[lane] =
+            __float2half(0.015625f * static_cast<float>(1 + lane % 4));
     }
 
     uint16_t* device_packed = nullptr;
@@ -149,17 +150,20 @@ void fill_activations(std::vector<half>& activations, int M, int K) {
     }
 }
 
-void fill_packed_weights(std::vector<uint8_t>& packed, int K, int N) {
-    const int packed_rows = (K + 1) / 2;
-    for (int pair = 0; pair < packed_rows; ++pair) {
-        const int k0 = pair * 2;
+void fill_qweight(std::vector<int32_t>& qweight, int K, int N) {
+    const int qword_rows = (K + 7) / 8;
+    for (int row = 0; row < qword_rows; ++row) {
         for (int n = 0; n < N; ++n) {
-            const uint8_t low = static_cast<uint8_t>((k0 * 3 + n * 5 + 1) & 0xF);
-            uint8_t high = static_cast<uint8_t>(((k0 + 1) * 3 + n * 5 + 1) & 0xF);
-            if (k0 + 1 >= K) {
-                high = 8;
+            uint32_t word = 0;
+            for (int nibble_index = 0; nibble_index < 8; ++nibble_index) {
+                const int k = row * 8 + nibble_index;
+                const uint32_t nibble =
+                    k < K
+                        ? static_cast<uint32_t>((k * 3 + n * 5 + 1) & 0xF)
+                        : 8u;
+                word |= nibble << (nibble_index * 4);
             }
-            packed[pair * N + n] = static_cast<uint8_t>(low | (high << 4));
+            qweight[row * N + n] = static_cast<int32_t>(word);
         }
     }
 }
@@ -175,14 +179,15 @@ void fill_scales(std::vector<half>& scales, int groups, int N) {
 }
 
 float reference_weight(
-    const std::vector<uint8_t>& packed,
+    const std::vector<int32_t>& qweight,
     const std::vector<half>& scales,
     int N,
     int group_size,
     int k,
     int n) {
-    const uint8_t pair = packed[(k >> 1) * N + n];
-    const int nibble = (k & 1) ? ((pair >> 4) & 0xF) : (pair & 0xF);
+    const uint32_t word =
+        static_cast<uint32_t>(qweight[(k >> 3) * N + n]);
+    const int nibble = static_cast<int>((word >> ((k & 7) * 4)) & 0xFu);
     const float scale = __half2float(scales[(k / group_size) * N + n]);
     return __half2float(
         __float2half(scale * static_cast<float>(nibble - 8)));
@@ -195,24 +200,25 @@ bool run_case(
     int group_size,
     int mode,
     const char* label) {
-    const int packed_rows = (K + 1) / 2;
+    const int qword_rows = (K + 7) / 8;
     const int groups = (K + group_size - 1) / group_size;
 
     std::vector<half> activations(M * K);
-    std::vector<uint8_t> packed(packed_rows * N);
+    std::vector<int32_t> qweight(qword_rows * N);
     std::vector<half> scales(groups * N);
     std::vector<half> output(M * N, __float2half(0.0f));
     fill_activations(activations, M, K);
-    fill_packed_weights(packed, K, N);
+    fill_qweight(qweight, K, N);
     fill_scales(scales, groups, N);
 
     half* device_activations = nullptr;
-    uint8_t* device_packed = nullptr;
+    int32_t* device_qweight = nullptr;
     half* device_scales = nullptr;
     half* device_output = nullptr;
     CHECK_CUDA(cudaMalloc(
         &device_activations, activations.size() * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&device_packed, packed.size() * sizeof(uint8_t)));
+    CHECK_CUDA(cudaMalloc(
+        &device_qweight, qweight.size() * sizeof(int32_t)));
     CHECK_CUDA(cudaMalloc(&device_scales, scales.size() * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&device_output, output.size() * sizeof(half)));
     CHECK_CUDA(cudaMemcpy(
@@ -221,9 +227,9 @@ bool run_case(
         activations.size() * sizeof(half),
         cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(
-        device_packed,
-        packed.data(),
-        packed.size() * sizeof(uint8_t),
+        device_qweight,
+        qweight.data(),
+        qweight.size() * sizeof(int32_t),
         cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(
         device_scales,
@@ -233,7 +239,7 @@ bool run_case(
 
     const cudaError_t launch_status = gptq_pro_gemm(
         device_activations,
-        device_packed,
+        device_qweight,
         device_scales,
         device_output,
         M,
@@ -250,7 +256,7 @@ bool run_case(
             mode_name(mode),
             cudaGetErrorString(launch_status));
         cudaFree(device_activations);
-        cudaFree(device_packed);
+        cudaFree(device_qweight);
         cudaFree(device_scales);
         cudaFree(device_output);
         return false;
@@ -263,7 +269,7 @@ bool run_case(
         cudaMemcpyDeviceToHost));
 
     cudaFree(device_activations);
-    cudaFree(device_packed);
+    cudaFree(device_qweight);
     cudaFree(device_scales);
     cudaFree(device_output);
 
@@ -276,7 +282,7 @@ bool run_case(
                 const float activation =
                     __half2float(activations[m * K + k]);
                 const float weight = reference_weight(
-                    packed, scales, N, group_size, k, n);
+                    qweight, scales, N, group_size, k, n);
                 reference = std::fma(activation, weight, reference);
             }
             const float expected = __half2float(__float2half(reference));
