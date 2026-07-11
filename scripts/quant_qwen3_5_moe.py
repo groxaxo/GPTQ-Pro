@@ -17,6 +17,7 @@ Example:
       --model <hf-or-local-checkpoint> --out qwen-moe-gptq-pro \
       --calib auto --nsample 16 --preset quality --offload-disk --dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,7 +39,10 @@ def _image_calibration(n_sample: int):
                 "role": "user",
                 "content": [
                     {"type": "image", "image": sample["url"]},
-                    {"type": "text", "text": "Generate a precise caption for this image."},
+                    {
+                        "type": "text",
+                        "text": "Generate a precise caption for this image.",
+                    },
                 ],
             },
             {"role": "assistant", "content": sample["caption"]},
@@ -65,7 +69,9 @@ def _text_calibration(path: Path | None, n_sample: int) -> list[str]:
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise SystemExit(f"invalid JSON on calibration line {line_number}: {exc}") from exc
+                raise SystemExit(
+                    f"invalid JSON on calibration line {line_number}: {exc}"
+                ) from exc
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 raise SystemExit(
@@ -84,11 +90,24 @@ def _text_calibration(path: Path | None, n_sample: int) -> list[str]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="HF id or local path of the unquantized checkpoint")
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="HF id or local path of the unquantized checkpoint",
+    )
     parser.add_argument("--out", required=True, help="fresh output directory")
-    parser.add_argument("--layers", type=int, default=0, help="quantize only the first N decoder layers (0=all)")
-    parser.add_argument("--nsample", type=int, default=16, help="number of calibration samples")
-    parser.add_argument("--preset", default="quality", choices=["fast", "quality", "max_quality"])
+    parser.add_argument(
+        "--layers",
+        type=int,
+        default=0,
+        help="quantize only the first N decoder layers (0=all)",
+    )
+    parser.add_argument(
+        "--nsample", type=int, default=16, help="number of calibration samples"
+    )
+    parser.add_argument(
+        "--preset", default="quality", choices=["fast", "quality", "max_quality"]
+    )
     parser.add_argument("--calib", default="auto", choices=["auto", "image", "text"])
     parser.add_argument(
         "--calibration-jsonl",
@@ -96,9 +115,15 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="optional JSONL with a non-empty 'text' field per row for text calibration",
     )
-    parser.add_argument("--calib-device", default="cuda:0", help="device for calibration tensors")
-    parser.add_argument("--offload-disk", action="store_true", help="offload completed modules to disk")
-    parser.add_argument("--dry-run", action="store_true", help="load and validate the layout, then exit")
+    parser.add_argument(
+        "--calib-device", default="cuda:0", help="device for calibration tensors"
+    )
+    parser.add_argument(
+        "--offload-disk", action="store_true", help="offload completed modules to disk"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="load and validate the layout, then exit"
+    )
     parser.add_argument(
         "--trust-remote-code",
         action="store_true",
@@ -148,10 +173,14 @@ def main() -> None:
         )
 
     layer_roots = model.extract_layers_node()
-    print(f"[ok] definition={model.__class__.__name__} modality={model.modality} layers={layer_roots}")
+    print(
+        f"[ok] definition={model.__class__.__name__} modality={model.modality} layers={layer_roots}"
+    )
 
     if args.layers:
-        layer_root = layer_roots[0] if isinstance(layer_roots, (list, tuple)) else layer_roots
+        layer_root = (
+            layer_roots[0] if isinstance(layer_roots, (list, tuple)) else layer_roots
+        )
         text_config = getattr(model.config, "text_config", None)
         total_layers = int(
             getattr(text_config, "num_hidden_layers", 0)
@@ -159,19 +188,25 @@ def main() -> None:
             or (args.layers + 1)
         )
         if args.layers > total_layers:
-            raise SystemExit(f"--layers={args.layers} exceeds the model's {total_layers} decoder layers")
+            raise SystemExit(
+                f"--layers={args.layers} exceeds the model's {total_layers} decoder layers"
+            )
         model.quantize_config.dynamic = {
             f"-:^{layer_root}\\.{index}\\.": {}
             for index in range(args.layers, total_layers)
         }
-        print(f"[ok] limiting quantization to first {args.layers}/{total_layers} layers")
+        print(
+            f"[ok] limiting quantization to first {args.layers}/{total_layers} layers"
+        )
 
     is_multimodal = MODALITY.IMAGE_TO_TEXT in model.modality
     calibration_mode = args.calib
     if calibration_mode == "auto":
         calibration_mode = "image" if is_multimodal else "text"
     if calibration_mode == "image" and not is_multimodal:
-        raise SystemExit("image calibration requires a multimodal qwen3_5_moe checkpoint")
+        raise SystemExit(
+            "image calibration requires a multimodal qwen3_5_moe checkpoint"
+        )
     if calibration_mode == "text" and is_multimodal:
         raise SystemExit(
             "text-only calibration is not supported by this driver for multimodal Qwen3.5/Qwen3.6 MoE; use --calib image"
