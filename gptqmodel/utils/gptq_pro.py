@@ -152,12 +152,11 @@ def normalize_gptq_pro_kernel_mode(kernel_mode: Optional[str] = None) -> str:
 
 
 def gptq_pro_qweight_to_b_packed(qweight: torch.Tensor) -> torch.Tensor:
-    """Convert GPTQ's int32 words to the kernel's pair-packed uint8 layout.
+    """Return the historical pair-packed byte view of GPTQ qweight.
 
-    GPTQ stores eight 4-bit values in every little-endian int32 word. Reinterpreting
-    each word as four bytes already produces the desired adjacent-nibble pairs, so
-    the conversion only needs a byte view and a layout transpose. This avoids the
-    previous eight-times-larger temporary int32 broadcast tensor.
+    The optimized runtime no longer uses this conversion; kernels consume the
+    native int32 qweight tensor directly. The helper is retained for checkpoint
+    inspection and backwards-compatible tooling.
     """
     if qweight.dtype != torch.int32:
         raise ValueError(f"Expected int32 qweight tensor, got `{qweight.dtype}`.")
@@ -174,7 +173,7 @@ def gptq_pro_qweight_to_b_packed(qweight: torch.Tensor) -> torch.Tensor:
 
 def apply_gptq_pro_linear(
     input: torch.Tensor,
-    b_packed: torch.Tensor,
+    qweight: torch.Tensor,
     scales: torch.Tensor,
     group_size: int,
     kernel_mode: Optional[str] = None,
@@ -183,7 +182,7 @@ def apply_gptq_pro_linear(
     mode = normalize_gptq_pro_kernel_mode(kernel_mode)
     return module.gptq_pro_gemm(
         input,
-        b_packed,
+        qweight,
         scales,
         int(group_size),
         mode,
