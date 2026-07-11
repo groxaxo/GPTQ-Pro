@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - docs/repository-consistency-20260711
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
