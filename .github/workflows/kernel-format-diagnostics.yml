@@ -1,0 +1,46 @@
+name: Kernel Format Diagnostics
+
+on:
+  push:
+    branches:
+      - perf/ampere-kernel-pipeline
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install ruff==0.13.0
+      - name: Capture lint and apply formatter
+        shell: bash
+        run: |
+          set +e
+          ruff check \
+            gptqmodel/utils/gptq_pro.py \
+            gptqmodel/nn_modules/qlinear/gptq_pro.py \
+            scripts/benchmark_gptq_pro_kernel.py \
+            tests/kernels/test_gptq_pro_ampere_pipeline.py \
+            > kernel-ruff-check.txt 2>&1
+          echo "$?" > kernel-ruff-check.exit
+          set -e
+          ruff format \
+            gptqmodel/utils/gptq_pro.py \
+            gptqmodel/nn_modules/qlinear/gptq_pro.py \
+            scripts/benchmark_gptq_pro_kernel.py \
+            tests/kernels/test_gptq_pro_ampere_pipeline.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-formatted-sources
+          path: |
+            kernel-ruff-check.txt
+            kernel-ruff-check.exit
+            gptqmodel/utils/gptq_pro.py
+            gptqmodel/nn_modules/qlinear/gptq_pro.py
+            scripts/benchmark_gptq_pro_kernel.py
+            tests/kernels/test_gptq_pro_ampere_pipeline.py
