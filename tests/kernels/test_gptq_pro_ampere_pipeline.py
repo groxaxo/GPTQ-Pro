@@ -22,11 +22,7 @@ def _module(name: str, **attributes):
 
 
 def _load_gptq_pro_runtime_module():
-    """Load the helper without importing the repository's package root.
-
-    This keeps the packing/dispatch tests runnable with only PyTorch installed,
-    while still executing the real checked-in module.
-    """
+    """Load the helper without importing the repository's package root."""
     namespace = "_gptq_pro_kernel_test"
     root_package = _module(namespace)
     root_package.__path__ = [str(ROOT / "gptqmodel")]
@@ -61,7 +57,7 @@ def _load_gptq_pro_runtime_module():
 RUNTIME = _load_gptq_pro_runtime_module()
 
 
-def test_qweight_byte_view_matches_gptq_nibble_pair_layout():
+def test_compatibility_byte_view_matches_gptq_nibble_pair_layout():
     qweight = torch.tensor(
         [
             [0x76543210, 0x01234567],
@@ -108,6 +104,8 @@ def test_ampere_source_contains_specialized_dispatch_and_pipeline():
 
     assert "GPTQ_PRO_WARPS_PER_CTA = 4" in header
     assert "GPTQ_PRO_PIPE = 2" in header
+    assert "GPTQ_PRO_QWORD_ROWS_PER_K_TILE" in header
+    assert "load_qweight_bfrag_packed16" in header
     assert "cp.async.ca.shared.global" in header
     assert "cp.async.cg.shared.global" in header
     assert "lop3.b32" in header
@@ -115,6 +113,21 @@ def test_ampere_source_contains_specialized_dispatch_and_pipeline():
     assert "gptq_pro_gemm_kernel_ampere" in source
     assert "gptq_pro_gemm_kernel_legacy" in source
     assert "cp_async_wait_group<1>()" in source
+
+
+def test_runtime_uses_native_qweight_without_duplicate_buffer():
+    qlinear = (
+        ROOT / "gptqmodel/nn_modules/qlinear/gptq_pro.py"
+    ).read_text(encoding="utf-8")
+    binding = (
+        ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "qweight=self.qweight" in qlinear
+    assert "b_packed" not in qlinear
+    assert "qweight.data_ptr<int32_t>()" in binding
+    assert "torch::kInt32" in binding
+    assert "ceil(K / 8)" in binding
 
 
 def test_cuda_compile_workflow_covers_ampere_targets():
