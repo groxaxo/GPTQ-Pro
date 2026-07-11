@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04
 
 ARG CONDA_DIR=/opt/conda
-ARG ENV_NAME=gptq-pro-vllm
+ARG ENV_NAME=gptq-pro
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -9,6 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_DEVICE_ORDER=PCI_BUS_ID \
     HF_HOME=/workspace/.cache/huggingface \
     TRANSFORMERS_CACHE=/workspace/.cache/huggingface \
+    GPTQMODEL_EXT_BUILD=/workspace/.cache/gptqmodel_extensions \
     PATH=${CONDA_DIR}/bin:${PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,8 +46,8 @@ COPY . .
 
 RUN source ${CONDA_DIR}/etc/profile.d/conda.sh && \
     conda activate ${ENV_NAME} && \
-    python -m pip install --upgrade pip && \
+    python -m pip install --upgrade pip wheel setuptools && \
     python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 "torch>=2.8.0" && \
-    python -m pip install -v --no-build-isolation -e ".[vllm,eval,openai]"
+    python -m pip install -v --no-build-isolation -e .
 
-CMD ["/bin/bash", "-lc", "source /opt/conda/etc/profile.d/conda.sh && conda activate gptq-pro-vllm && exec bash"]
+CMD ["/bin/bash", "-lc", "source /opt/conda/etc/profile.d/conda.sh && conda activate gptq-pro && exec bash"]
