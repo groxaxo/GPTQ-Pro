@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -16,7 +16,6 @@ from ...utils.gptq_pro import (
     _validate_gptq_pro_device_support,
     apply_gptq_pro_linear,
     ensure_gptq_pro_loaded,
-    gptq_pro_qweight_to_b_packed,
 )
 from ...utils.rocm import IS_ROCM
 
@@ -24,8 +23,8 @@ from ...utils.rocm import IS_ROCM
 # GPTQ-Pro is the only inference kernel shipped by this fork. AUTO dispatches
 # small-M workloads to a coalesced decode kernel, aligned GEMMs to a four-warp
 # double-buffered cp.async Tensor Core path, and unusual compatible shapes to a
-# validator-backed general-shape fallback. Priority 120 keeps this runtime first
-# in the local single-backend registry; it is not a claim of benchmark leadership.
+# validator-backed general-shape fallback. All paths read the native int32
+# qweight tensor, avoiding a second persistent copy of quantized model weights.
 _GPTQ_PRO_AUTO_PRIORITY = 120
 
 
@@ -179,19 +178,7 @@ class GptqProQuantLinear(PackableQuantLinear):
                 "GPTQ-Pro backend only supports sequential g_idx / desc_act=False checkpoints."
             )
 
-        b_packed = gptq_pro_qweight_to_b_packed(self.qweight)
-        if "b_packed" not in self._buffers:
-            self.register_buffer("b_packed", b_packed, persistent=False)
-        else:
-            self.b_packed = b_packed
-
         super().post_init()
-
-    def list_buffers(self) -> List:
-        buffers = super().list_buffers()
-        if hasattr(self, "b_packed") and self.b_packed is not None:
-            buffers.append(self.b_packed)
-        return buffers
 
     def forward(self, x: torch.Tensor):
         if x.shape[0] == 0:
@@ -212,7 +199,7 @@ class GptqProQuantLinear(PackableQuantLinear):
 
         out = apply_gptq_pro_linear(
             input=x.contiguous(),
-            b_packed=self.b_packed,
+            qweight=self.qweight,
             scales=self.scales,
             group_size=self.effective_group_size,
         )
