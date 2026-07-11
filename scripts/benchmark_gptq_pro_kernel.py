@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Benchmark GPTQ-Pro's raw CUDA kernels without model-loading overhead.
 
-The script measures AUTO, legacy, and the applicable specialized path for a set
-of M values. It also checks a column subset against a PyTorch FP32 reference
-using FP16-dequantized weights, matching the kernel's numerical contract.
+The script measures AUTO, legacy, and applicable specialized paths for a set of
+M values. It checks a column subset against a PyTorch FP32 reference using
+FP16-dequantized weights, matching the kernel's numerical contract.
 
 Example:
 
@@ -52,8 +52,8 @@ def parse_args() -> argparse.Namespace:
     for name in ("n", "k", "group_size", "warmup", "iterations"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be greater than zero")
-    if args.k % 2 != 0:
-        parser.error("--k must be even for the pair-packed runtime layout")
+    if args.k % 8 != 0:
+        parser.error("--k must be divisible by 8 for native GPTQ int32 packing")
     if args.group_size % 16 != 0:
         parser.error("--group-size must be a multiple of 16")
     if args.k % args.group_size != 0:
@@ -65,54 +65,68 @@ def parse_args() -> argparse.Namespace:
 
 def make_problem(m: int, n: int, k: int, group_size: int, device: torch.device):
     activations = torch.randn((m, k), device=device, dtype=torch.float16)
-    packed = torch.randint(0, 256, (k // 2, n), device=device, dtype=torch.uint8)
+    qweight_bytes = torch.randint(
+        0,
+        256,
+        (k // 8, n, 4),
+        device=device,
+        dtype=torch.uint8,
+    )
+    qweight = qweight_bytes.view(torch.int32).squeeze(-1).contiguous()
     scales = (
         torch.rand((k // group_size, n), device=device, dtype=torch.float16) * 0.08
         + 0.001
     )
-    return activations, packed, scales
+    return activations, qweight, scales
 
 
 def dequantize_reference(
-    packed: torch.Tensor,
+    qweight: torch.Tensor,
     scales: torch.Tensor,
     k: int,
     group_size: int,
 ) -> torch.Tensor:
-    values = torch.empty(
-        (k, packed.shape[1]), device=packed.device, dtype=torch.float16
+    shifts = torch.arange(
+        0,
+        32,
+        4,
+        device=qweight.device,
+        dtype=torch.int32,
+    ).view(1, 8, 1)
+    values = (
+        torch.bitwise_and(torch.bitwise_right_shift(qweight.unsqueeze(1), shifts), 0xF)
+        .reshape(k, qweight.shape[1])
+        .to(torch.float16)
+        - 8
     )
-    values[0::2] = (packed & 0x0F).to(torch.float16) - 8
-    values[1::2] = ((packed >> 4) & 0x0F).to(torch.float16) - 8
-    group_index = torch.arange(k, device=packed.device) // group_size
+    group_index = torch.arange(k, device=qweight.device) // group_size
     return values * scales.index_select(0, group_index)
 
 
 def check_numerics(
     module,
     activations: torch.Tensor,
-    packed: torch.Tensor,
+    qweight: torch.Tensor,
     scales: torch.Tensor,
     group_size: int,
     mode: str,
     columns: int,
 ) -> dict[str, float]:
-    columns = min(columns, packed.shape[1])
-    # Preserve the optimized path's alignment constraints when possible.
+    columns = min(columns, qweight.shape[1])
     if columns >= 16:
         columns = max(16, columns - columns % 16)
-    packed_subset = packed[:, :columns].contiguous()
+    qweight_subset = qweight[:, :columns].contiguous()
     scales_subset = scales[:, :columns].contiguous()
 
     actual = module.gptq_pro_gemm(
         activations,
-        packed_subset,
+        qweight_subset,
         scales_subset,
         group_size,
         mode,
     )
     weights = dequantize_reference(
-        packed_subset,
+        qweight_subset,
         scales_subset,
         activations.shape[1],
         group_size,
@@ -138,7 +152,7 @@ def check_numerics(
 def benchmark_mode(
     module,
     activations: torch.Tensor,
-    packed: torch.Tensor,
+    qweight: torch.Tensor,
     scales: torch.Tensor,
     group_size: int,
     mode: str,
@@ -146,7 +160,7 @@ def benchmark_mode(
     iterations: int,
 ) -> dict[str, float | str]:
     for _ in range(warmup):
-        module.gptq_pro_gemm(activations, packed, scales, group_size, mode)
+        module.gptq_pro_gemm(activations, qweight, scales, group_size, mode)
     torch.cuda.synchronize(activations.device)
 
     times_ms: list[float] = []
@@ -154,7 +168,7 @@ def benchmark_mode(
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
-        module.gptq_pro_gemm(activations, packed, scales, group_size, mode)
+        module.gptq_pro_gemm(activations, qweight, scales, group_size, mode)
         end.record()
         end.synchronize()
         times_ms.append(float(start.elapsed_time(end)))
@@ -164,12 +178,12 @@ def benchmark_mode(
     sorted_times = sorted(times_ms)
     p95_ms = sorted_times[min(len(sorted_times) - 1, int(len(sorted_times) * 0.95))]
     m, k = activations.shape
-    n = packed.shape[1]
+    n = qweight.shape[1]
     dense_operations = 2.0 * m * n * k
     tflops = dense_operations / (median_ms / 1000.0) / 1.0e12
     minimum_bytes = (
         activations.numel() * activations.element_size()
-        + packed.numel() * packed.element_size()
+        + qweight.numel() * qweight.element_size()
         + scales.numel() * scales.element_size()
         + m * n * activations.element_size()
     )
@@ -186,7 +200,7 @@ def benchmark_mode(
 
 def applicable_modes(m: int, n: int, k: int) -> list[str]:
     modes = ["auto", "legacy"]
-    if m <= 4 and k % 2 == 0:
+    if m <= 4 and k % 8 == 0:
         modes.append("gemv")
     if n % 16 == 0 and k % 16 == 0:
         modes.append("ampere")
@@ -226,14 +240,14 @@ def main() -> None:
         f"N={args.n}, K={args.k}, group={args.group_size}"
     )
     for m in args.m_values:
-        activations, packed, scales = make_problem(
+        activations, qweight, scales = make_problem(
             m, args.n, args.k, args.group_size, device
         )
         for mode in applicable_modes(m, args.n, args.k):
             numerical = check_numerics(
                 module,
                 activations,
-                packed,
+                qweight,
                 scales,
                 args.group_size,
                 mode,
@@ -242,7 +256,7 @@ def main() -> None:
             timing = benchmark_mode(
                 module,
                 activations,
-                packed,
+                qweight,
                 scales,
                 args.group_size,
                 mode,
@@ -257,7 +271,7 @@ def main() -> None:
                 f"TFLOP/s={timing['effective_dense_tflops']:.2f} "
                 f"cos={numerical['cosine_similarity']:.8f}"
             )
-        del activations, packed, scales
+        del activations, qweight, scales
         torch.cuda.empty_cache()
 
     if args.output is not None:
