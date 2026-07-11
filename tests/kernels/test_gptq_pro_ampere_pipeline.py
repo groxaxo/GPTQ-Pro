@@ -1,15 +1,64 @@
+from __future__ import annotations
+
+import importlib.util
+import logging
+import sys
+import types
 from pathlib import Path
 
 import pytest
 import torch
 
-from gptqmodel.utils.gptq_pro import (
-    gptq_pro_qweight_to_b_packed,
-    normalize_gptq_pro_kernel_mode,
-)
-
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _module(name: str, **attributes):
+    module = types.ModuleType(name)
+    for attribute, value in attributes.items():
+        setattr(module, attribute, value)
+    sys.modules[name] = module
+    return module
+
+
+def _load_gptq_pro_runtime_module():
+    """Load the helper without importing the repository's package root.
+
+    This keeps the packing/dispatch tests runnable with only PyTorch installed,
+    while still executing the real checked-in module.
+    """
+    namespace = "_gptq_pro_kernel_test"
+    root_package = _module(namespace)
+    root_package.__path__ = [str(ROOT / "gptqmodel")]
+    utils_package = _module(f"{namespace}.utils")
+    utils_package.__path__ = [str(ROOT / "gptqmodel/utils")]
+
+    _module(
+        f"{namespace}.utils._extension_loader",
+        load_extension_module=lambda _name: (_ for _ in ()).throw(
+            ImportError("test stub")
+        ),
+    )
+    _module(f"{namespace}.utils.env", env_flag=lambda *_args, **_kwargs: False)
+    _module(
+        f"{namespace}.utils.logger",
+        setup_logger=lambda: logging.getLogger("gptq-pro-kernel-test"),
+    )
+    _module(f"{namespace}.utils.rocm", IS_ROCM=False)
+
+    module_name = f"{namespace}.utils.gptq_pro"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        ROOT / "gptqmodel/utils/gptq_pro.py",
+    )
+    assert spec is not None and spec.loader is not None
+    runtime = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = runtime
+    spec.loader.exec_module(runtime)
+    return runtime
+
+
+RUNTIME = _load_gptq_pro_runtime_module()
 
 
 def test_qweight_byte_view_matches_gptq_nibble_pair_layout():
@@ -21,7 +70,7 @@ def test_qweight_byte_view_matches_gptq_nibble_pair_layout():
         dtype=torch.int32,
     )
 
-    packed = gptq_pro_qweight_to_b_packed(qweight)
+    packed = RUNTIME.gptq_pro_qweight_to_b_packed(qweight)
 
     expected = torch.tensor(
         [
@@ -41,12 +90,12 @@ def test_qweight_byte_view_matches_gptq_nibble_pair_layout():
 
 
 def test_kernel_mode_normalization_and_environment(monkeypatch):
-    assert normalize_gptq_pro_kernel_mode(" AMPERE ") == "ampere"
+    assert RUNTIME.normalize_gptq_pro_kernel_mode(" AMPERE ") == "ampere"
     monkeypatch.setenv("GPTQMODEL_GPTQ_PRO_KERNEL", "gemv")
-    assert normalize_gptq_pro_kernel_mode() == "gemv"
+    assert RUNTIME.normalize_gptq_pro_kernel_mode() == "gemv"
 
     with pytest.raises(ValueError, match="kernel mode"):
-        normalize_gptq_pro_kernel_mode("unknown")
+        RUNTIME.normalize_gptq_pro_kernel_mode("unknown")
 
 
 def test_ampere_source_contains_specialized_dispatch_and_pipeline():
@@ -76,3 +125,4 @@ def test_cuda_compile_workflow_covers_ampere_targets():
     for architecture in ("sm_80", "sm_86", "sm_87"):
         assert architecture in workflow
     assert "gptq_pro_validate.cu gptq_pro_kernel.cu" in workflow
+    assert "gptq_pro_torch.cpp" in workflow
