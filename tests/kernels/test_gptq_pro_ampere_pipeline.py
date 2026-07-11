@@ -69,9 +69,9 @@ def test_ampere_source_contains_specialized_dispatch_and_pipeline():
 
 
 def test_cuda_compile_workflow_covers_ampere_targets():
-    workflow = (
-        ROOT / ".github/workflows/gptq-pro-cuda-compile.yml"
-    ).read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/gptq-pro-cuda-compile.yml").read_text(
+        encoding="utf-8"
+    )
 
     for architecture in ("sm_80", "sm_86", "sm_87"):
         assert architecture in workflow
