@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 
@@ -191,8 +192,9 @@ def main() -> None:
             raise SystemExit(
                 f"--layers={args.layers} exceeds the model's {total_layers} decoder layers"
             )
+        escaped_layer_root = re.escape(layer_root)
         model.quantize_config.dynamic = {
-            f"-:^{layer_root}\\.{index}\\.": {}
+            f"-:^{escaped_layer_root}\\.{index}\\.": {}
             for index in range(args.layers, total_layers)
         }
         print(
