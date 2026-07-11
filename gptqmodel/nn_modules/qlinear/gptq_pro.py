@@ -35,7 +35,10 @@ class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_BACKENDS = [BACKEND.GPTQ_PRO]
     SUPPORTS_METHODS = [METHOD.GPTQ]
     # Priority 120 keeps GPTQ-Pro first in the single-backend AUTO registry.
-    SUPPORTS_FORMATS = {FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY, FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY}
+    SUPPORTS_FORMATS = {
+        FORMAT.GPTQ: _GPTQ_PRO_AUTO_PRIORITY,
+        FORMAT.GPTQ_V2: _GPTQ_PRO_AUTO_PRIORITY,
+    }
     SUPPORTS_BITS = [4]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128, 256, 512, 1024]
     SUPPORTS_DESC_ACT = [False]
@@ -101,7 +104,9 @@ class GptqProQuantLinear(PackableQuantLinear):
             if IS_ROCM:
                 raise NotImplementedError("GPTQ-Pro kernel is not supported on ROCm.")
             if not _validate_gptq_pro_device_support():
-                raise NotImplementedError("GPTQ-Pro kernel requires compute capability >= 8.0.")
+                raise NotImplementedError(
+                    "GPTQ-Pro kernel requires compute capability >= 8.0."
+                )
 
     @classmethod
     def _validate(
@@ -136,8 +141,16 @@ class GptqProQuantLinear(PackableQuantLinear):
         if not ok:
             return ok, err
 
-        effective_group_size = in_features if (group_size == -1 and in_features is not None) else group_size
-        if effective_group_size is not None and effective_group_size > 0 and (effective_group_size % 16) != 0:
+        effective_group_size = (
+            in_features
+            if (group_size == -1 and in_features is not None)
+            else group_size
+        )
+        if (
+            effective_group_size is not None
+            and effective_group_size > 0
+            and (effective_group_size % 16) != 0
+        ):
             return False, NotImplementedError(
                 f"{cls} requires group_size to be a positive multiple of 16: actual group_size = `{effective_group_size}`"
             )
@@ -147,15 +160,22 @@ class GptqProQuantLinear(PackableQuantLinear):
         ensure_gptq_pro_loaded()
 
         if self.qweight.device.type != "cuda":
-            raise ValueError("GPTQ-Pro backend requires CUDA-resident packed weights before post_init().")
+            raise ValueError(
+                "GPTQ-Pro backend requires CUDA-resident packed weights before post_init()."
+            )
 
-        expected_g_idx = torch.arange(
-            self.in_features,
-            device=self.g_idx.device,
-            dtype=self.g_idx.dtype,
-        ) // self.group_size
+        expected_g_idx = (
+            torch.arange(
+                self.in_features,
+                device=self.g_idx.device,
+                dtype=self.g_idx.dtype,
+            )
+            // self.group_size
+        )
         if not torch.equal(self.g_idx, expected_g_idx):
-            raise ValueError("GPTQ-Pro backend only supports sequential g_idx / desc_act=False checkpoints.")
+            raise ValueError(
+                "GPTQ-Pro backend only supports sequential g_idx / desc_act=False checkpoints."
+            )
 
         b_packed = gptq_pro_qweight_to_b_packed(self.qweight)
         if "b_packed" not in self._buffers:
@@ -173,7 +193,9 @@ class GptqProQuantLinear(PackableQuantLinear):
 
     def forward(self, x: torch.Tensor):
         if x.shape[0] == 0:
-            return torch.empty(x.shape[:-1] + (self.out_features,), dtype=x.dtype, device=x.device)
+            return torch.empty(
+                x.shape[:-1] + (self.out_features,), dtype=x.dtype, device=x.device
+            )
 
         out_shape = x.shape[:-1] + (self.out_features,)
         x = x.reshape(-1, x.shape[-1])
