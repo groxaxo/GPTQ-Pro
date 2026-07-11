@@ -1,13 +1,10 @@
 /*
  * GPTQ-Pro Ampere INT4 kernel primitives.
  *
- * The runtime has three execution paths:
- *   - a dedicated coalesced GEMV kernel for very small M;
- *   - a four-warp, double-buffered cp.async Tensor Core kernel for aligned GEMM;
- *   - the original general-shape kernel as a correctness fallback.
- *
- * Symmetric INT4 weights are stored as unsigned nibbles with an implicit
- * zero-point of 8. Tensor Core paths dequantize to FP16 and accumulate in FP32.
+ * The runtime consumes GPTQ's native int32 qweight layout directly. Every word
+ * stores eight K-axis nibbles for one output column. A 16-wide K tile therefore
+ * needs two coalesced qweight rows—the same 512 global bytes as the pair-packed
+ * representation, without a second persistent weight buffer.
  */
 
 #pragma once
@@ -35,15 +32,17 @@ static constexpr int GPTQ_PRO_THREADS_PER_CTA =
 static constexpr int GPTQ_PRO_N_PER_CTA =
     GPTQ_PRO_WARPS_PER_CTA * GPTQ_PRO_N_PER_WARP;  // 256
 
-static constexpr int GPTQ_PRO_B_PACKED_ROWS_PER_K_TILE =
-    GPTQ_PRO_K_PER_WARP / 2;  // 8 packed rows
-static constexpr int GPTQ_PRO_B_BYTES_PER_WARP_TILE =
-    GPTQ_PRO_B_PACKED_ROWS_PER_K_TILE * GPTQ_PRO_N_PER_WARP;  // 512
+static constexpr int GPTQ_PRO_QWORD_ROWS_PER_K_TILE =
+    GPTQ_PRO_K_PER_WARP / 8;  // 2 int32 rows
+static constexpr int GPTQ_PRO_QWORD_VALUES_PER_WORD = 8;
+static constexpr int GPTQ_PRO_QWORD_BYTES_PER_WARP_TILE =
+    GPTQ_PRO_QWORD_ROWS_PER_K_TILE * GPTQ_PRO_N_PER_WARP *
+    sizeof(uint32_t);  // 512
 
 static constexpr int GPTQ_PRO_GEMV_THREADS = 128;
 static constexpr int GPTQ_PRO_GEMV_MAX_M = 4;
 
-// Number of uint32_t words per legacy (ks,j) tile in Bfrag shared memory.
+// Number of uint32_t words per legacy (ks,j) B-fragment shared tile.
 static constexpr int GPTQ_PRO_BFRAG_WORDS_PER_TILE =
     GPTQ_PRO_WARP_SIZE / 2;
 static constexpr int GPTQ_PRO_BFRAG_WORDS_PER_BUF =
@@ -179,17 +178,20 @@ __device__ __forceinline__ void decode_bfrag_to_rb(
 }
 
 // ---------------------------------------------------------------------------
-// Raw packed-B shared-memory layout used by the optimized pipeline
+// Native qweight shared-memory layout used by the optimized pipeline
 // ---------------------------------------------------------------------------
-__device__ __forceinline__ uint16_t load_raw_bfrag_packed16(
-    const uint8_t* __restrict__ smem_b, int j, int lane) {
+__device__ __forceinline__ uint16_t load_qweight_bfrag_packed16(
+    const uint32_t* __restrict__ smem_qweight, int j, int lane) {
     const int group_id = lane >> 2;
     const int thread_id = lane & 3;
     const int n_local = j * 8 + group_id;
-    const uint8_t byte01 =
-        smem_b[thread_id * GPTQ_PRO_N_PER_WARP + n_local];
-    const uint8_t byte89 =
-        smem_b[(thread_id + 4) * GPTQ_PRO_N_PER_WARP + n_local];
+    const uint32_t word0 = smem_qweight[n_local];
+    const uint32_t word1 =
+        smem_qweight[GPTQ_PRO_N_PER_WARP + n_local];
+    const uint8_t byte01 = static_cast<uint8_t>(
+        (word0 >> (thread_id * 8)) & 0xFFu);
+    const uint8_t byte89 = static_cast<uint8_t>(
+        (word1 >> (thread_id * 8)) & 0xFFu);
     return static_cast<uint16_t>(byte01) |
            (static_cast<uint16_t>(byte89) << 8);
 }
@@ -279,7 +281,7 @@ __device__ __forceinline__ void mma_f32_m16n8k16(
 
 cudaError_t gptq_pro_gemm(
     const half* A,
-    const uint8_t* B_packed,
+    const int32_t* Q,
     const half* S,
     half* C,
     int M,
