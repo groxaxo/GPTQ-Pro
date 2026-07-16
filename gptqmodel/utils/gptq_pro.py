@@ -22,7 +22,7 @@ from .rocm import IS_ROCM
 
 log = setup_logger()
 
-_GPTQ_PRO_EXTENSION_NAME = "gptqmodel_gptq_pro_kernels_v2"
+_GPTQ_PRO_EXTENSION_NAME = "gptqmodel_gptq_pro_kernels_v3"
 _GPTQ_PRO_LOCK = threading.Lock()
 _GPTQ_PRO_MODULE = None
 _GPTQ_PRO_INITIALISED = False
@@ -43,7 +43,7 @@ def _validate_gptq_pro_device_support() -> bool:
 def _gptq_pro_sources() -> tuple[Path, Path]:
     project_root = Path(__file__).resolve().parents[2]
     ext_dir = project_root / "gptqmodel_ext" / "gptq_pro"
-    return ext_dir / "gptq_pro_torch.cpp", ext_dir / "gptq_pro_kernel.cu"
+    return ext_dir / "gptq_pro_torch.cpp", ext_dir / "gptq_pro_kernel_v3.cu"
 
 
 def _prepare_build_directory(verbose: bool) -> str:
