@@ -18,7 +18,7 @@ ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 GPU_SELECTOR="auto"
 PYTHON_BIN="${PYTHON:-python3}"
 OUTPUT_DIR=""
-M_VALUES="1,4,8,16,64,256"
+M_VALUES="1,2,3,4,5,6,8,12,16,24,32,64,128,256"
 N_SIZE=4096
 K_SIZE=4096
 GROUP_SIZE=128
@@ -44,7 +44,7 @@ Usage: scripts/validate_gptq_pro_ampere.sh [options]
   --python PATH           Python interpreter; default: python3
   --output-dir PATH       Artifact directory
   --quick                 Smaller matrices and fewer benchmark iterations
-  --m-values LIST         Default: 1,4,8,16,64,256
+  --m-values LIST         Default: 1,2,3,4,5,6,8,12,16,24,32,64,128,256
   --n INT                 Default: 4096
   --k INT                 Default: 4096
   --group-size INT        Default: 128
@@ -98,7 +98,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$QUICK" -eq 1 ]]; then
-  M_VALUES="1,4,16,64"
+  M_VALUES="1,2,4,5,8,16,64"
   N_SIZE=2048
   K_SIZE=2048
   GROUP_SIZE=128
@@ -108,7 +108,7 @@ if [[ "$QUICK" -eq 1 ]]; then
 fi
 
 [[ -f "${ROOT_DIR}/pyproject.toml" ]] || die "repository root not found"
-[[ -f "${ROOT_DIR}/gptqmodel_ext/gptq_pro/gptq_pro_kernel.cu" ]] || die "CUDA source missing"
+[[ -f "${ROOT_DIR}/gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu" ]] || die "V3 CUDA source missing"
 command -v nvidia-smi >/dev/null || die "nvidia-smi is required"
 command -v nvcc >/dev/null || die "nvcc is required"
 command -v "$PYTHON_BIN" >/dev/null || die "Python not found: $PYTHON_BIN"
@@ -216,7 +216,7 @@ fi
   nvcc -O3 -std=c++17 -lineinfo -Xptxas=-v,-warn-spills \
     -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ \
     "${ARCH_FLAGS[@]}" \
-    "${EXT_DIR}/gptq_pro_validate.cu" "${EXT_DIR}/gptq_pro_kernel.cu" \
+    "${EXT_DIR}/gptq_pro_validate.cu" "${EXT_DIR}/gptq_pro_kernel_v3.cu" \
     -o "$VALIDATOR"
 ) 2>&1 | tee "${OUTPUT_DIR}/standalone-build.log"
 
