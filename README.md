@@ -41,31 +41,32 @@ supported by the GPTQ-Pro runtime.
 
 `gptqmodel_ext/gptq_pro/` contains three dispatch paths:
 
-1. **Decode / very small batches (`M <= 4`)**
-   - one CUDA thread computes one output column;
-   - native `qweight` reads are coalesced across each warp;
-   - four adjacent activation pairs are decoded from each GPTQ `int32` word;
-   - FP16 dequantization is preserved before FP32 accumulation;
-   - designed for the memory-bandwidth-bound token-generation regime.
+1. **Fused decode / very small batches (`M <= 4`)**
+   - four warps cooperatively own a 32-column output tile;
+   - every warp processes an interleaved quarter of K;
+   - each LOP3-decoded native `qweight` word is reused across all active M rows;
+   - per-thread scales remain cached until the quantization group changes;
+   - deterministic shared-memory split-K reduction preserves FP32 accumulation.
 2. **Aligned medium-batch and prefill GEMM**
    - four warps per CTA, producing a `16 × 256` output region;
-   - double-buffered `cp.async` global-to-shared pipeline;
-   - coalesced 16-byte activation, native-qweight, and scale copies;
+   - double-buffered `cp.async` global-to-shared A/Q pipeline;
+   - scale rows are staged only when K crosses a quantization-group boundary;
    - Tensor Core `mma.sync.m16n8k16` with FP32 accumulation;
    - LOP3-assisted INT4-to-FP16 fragment conversion;
+   - optimized predicated tails for every runtime-valid `N % 8 == 0` shape;
    - vectorized FP16 output stores.
 3. **General-shape fallback**
-   - retains the validator-backed one-warp implementation;
-   - handles compatible edge shapes that do not satisfy the optimized path's
-     `N % 16 == 0` requirement.
+   - retains the validator-backed one-warp V2 implementation;
+   - handles compatible direct-extension edge shapes outside the public runtime
+     contract.
 
 All three paths consume the checkpoint's original `int32 qweight` directly. The
-runtime no longer materializes a second pair-packed weight tensor, avoiding a
+runtime does not materialize a second pair-packed weight tensor, avoiding a
 persistent duplicate of the model's quantized weights and eliminating a packing
 transform during module initialization.
 
-`AUTO` selects the small-`M` kernel first, then the pipelined Tensor Core path,
-then the general fallback. Experts can force a path for parity testing:
+`AUTO` selects the fused small-`M` kernel first, then the pipelined Tensor Core
+path, then the general fallback. Experts can force a path for parity testing:
 
 ```bash
 export GPTQMODEL_GPTQ_PRO_KERNEL=gemv    # auto, gemv, ampere, or legacy
@@ -74,16 +75,21 @@ export GPTQMODEL_GPTQ_PRO_KERNEL=gemv    # auto, gemv, ampere, or legacy
 The override is intended for diagnostics and benchmarking. Forced modes reject
 incompatible shapes rather than silently changing behavior.
 
+The V3 design and exact validation contract are documented in
+[`docs/KERNEL_V3.md`](docs/KERNEL_V3.md).
+
 ### Remaining kernel work
 
 The runtime is materially more Ampere-aware than the original scaffold, but the
-following are still open engineering targets:
+following remain open engineering targets:
 
-- GPU-measured crossover tuning instead of the initial `M <= 4` decode rule;
+- physical-GPU crossover tuning around `M=4..16`;
+- small-M Tensor Core split-K tile families;
 - `ldmatrix`-based shared-to-register loading and shared-memory swizzling;
-- additional CTA tile families and architecture-specific autotuning;
-- native BF16 Tensor Core execution;
-- profiler-guided scale caching and wider prefetch strategies;
+- wider K stages and deeper asynchronous pipelines;
+- architecture-specific tile selection and bounded autotuning;
+- native or fused-input BF16 execution;
+- fused QKV, gate/up, and grouped-MoE execution;
 - production GPU validation across the full advertised shape/group matrix.
 
 No performance lead is claimed without checked-in measurements. See
@@ -196,7 +202,7 @@ Measure the CUDA extension without model-loading or tokenization overhead:
 
 ```bash
 python scripts/benchmark_gptq_pro_kernel.py \
-  --m-values 1,4,8,16,64,256 \
+  --m-values 1,2,3,4,5,6,8,12,16,24,32,64,128,256 \
   --n 4096 --k 4096 --group-size 128 \
   --warmup 20 --iterations 100 \
   --output kernel-results.json
@@ -206,10 +212,11 @@ The benchmark:
 
 - reports median, mean, and p95 kernel time;
 - reports effective dense TFLOP/s and a conservative bandwidth lower bound;
-- compares AUTO against forced specialized and legacy modes;
+- compares AUTO against forced compatible specialized and legacy modes;
+- records selected dispatch, grid dimensions, CTA count, and threads per CTA;
 - checks a column subset against a PyTorch FP32 reference using FP16-dequantized
   native `qweight` values;
-- records GPU, compute capability, PyTorch, and CUDA runtime information.
+- records GPU, SM count, compute capability, PyTorch, and CUDA runtime information.
 
 Commit raw JSON results when making performance claims. Use Nsight Compute to
 confirm whether changes improve memory throughput, Tensor Core utilization,
@@ -296,10 +303,17 @@ On a real GPU, build and run the standalone numerical validator:
 
 ```bash
 cd gptqmodel_ext/gptq_pro
-nvcc -O3 -std=c++17 -arch=sm_80 \
+nvcc -O3 -std=c++17 -arch=sm_86 \
   -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ \
-  gptq_pro_validate.cu gptq_pro_kernel.cu -o gptq_pro_validate
+  gptq_pro_validate.cu gptq_pro_kernel_v3.cu -o gptq_pro_validate
 ./gptq_pro_validate
+```
+
+Or run the complete RTX 3090 validation and benchmark sequence:
+
+```bash
+bash scripts/validate_gptq_pro_ampere.sh \
+  --gpu 0 --native-arch-only --require-speedup
 ```
 
 A real CUDA run, numerical comparison against the dense source checkpoint, and
@@ -313,6 +327,7 @@ model as production-ready.
 - `scripts/benchmark_gptq_pro_kernel.py` — raw CUDA benchmark and parity checks;
 - `scripts/` — model quantization and validation helpers;
 - `tests/` — CPU and CUDA regression coverage;
+- `docs/KERNEL_V3.md` — fused decode, scale-cache, dispatch, and validation contract;
 - `docs/ASSESSMENT_AND_ROADMAP.md` — current engineering status and roadmap;
 - `docs/QWEN35_QWEN36.md` — Qwen architecture and driver guide.
 
