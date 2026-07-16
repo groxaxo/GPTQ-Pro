@@ -3,7 +3,7 @@
  *
  * Build without PyTorch:
  *   nvcc -O3 -std=c++17 -arch=sm_80 \
- *     gptq_pro_validate.cu gptq_pro_kernel.cu -o gptq_pro_validate
+ *     gptq_pro_validate.cu gptq_pro_kernel_v3.cu -o gptq_pro_validate
  *
  * Run on an Ampere-or-newer CUDA GPU. The harness checks the LOP3 fragment
  * decoder and compares every dispatch path with a scalar FP16-dequant/FP32-
@@ -13,8 +13,8 @@
 #include "gptq_pro_kernel.cuh"
 
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 #define CHECK_CUDA(expr)                                                        \
@@ -353,8 +353,10 @@ int main() {
         {1, 128, 128, 32, GPTQ_PRO_KERNEL_GEMV, "decode-m1"},
         {4, 80, 128, 32, GPTQ_PRO_KERNEL_GEMV, "decode-m4"},
         {1, 128, 128, 32, GPTQ_PRO_KERNEL_AUTO, "auto-decode"},
-        {16, 64, 128, 32, GPTQ_PRO_KERNEL_AMPERE, "ampere-single-warp-n"},
-        {31, 320, 256, 64, GPTQ_PRO_KERNEL_AMPERE, "ampere-tail-mn"},
+        {16, 8, 128, 32, GPTQ_PRO_KERNEL_AMPERE, "ampere-n8"},
+        {16, 24, 128, 32, GPTQ_PRO_KERNEL_AMPERE, "ampere-n24"},
+        {31, 72, 256, 64, GPTQ_PRO_KERNEL_AMPERE, "ampere-n72-tail"},
+        {31, 320, 1024, 128, GPTQ_PRO_KERNEL_AMPERE, "ampere-scale-reuse"},
         {32, 320, 256, 64, GPTQ_PRO_KERNEL_AUTO, "auto-ampere"},
         {13, 41, 29, 16, GPTQ_PRO_KERNEL_LEGACY, "legacy-edge"},
         {13, 41, 29, 16, GPTQ_PRO_KERNEL_AUTO, "auto-legacy"},
@@ -373,6 +375,7 @@ int main() {
                       : 0;
     }
 
-    std::printf("\n=== GPTQ-Pro CUDA validation: %d / %d passed ===\n", passed, total);
+    std::printf(
+        "\n=== GPTQ-Pro CUDA validation: %d / %d passed ===\n", passed, total);
     return passed == total ? 0 : 1;
 }
