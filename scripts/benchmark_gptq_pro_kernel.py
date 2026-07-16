@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Benchmark GPTQ-Pro's raw CUDA kernels without model-loading overhead.
 
-The script measures AUTO, legacy, and applicable specialized paths for a set of
-M values. It checks a column subset against a PyTorch FP32 reference using
-FP16-dequantized weights, matching the kernel's numerical contract.
+The script measures AUTO, legacy, and every compatible specialized path around
+critical dispatch boundaries. It checks a column subset against a PyTorch FP32
+reference using FP16-dequantized weights, matching the kernel's numerical
+contract.
 
 Example:
 
     python scripts/benchmark_gptq_pro_kernel.py \
-        --m-values 1,4,8,16,64,256 --n 4096 --k 4096 --group-size 128 \
+        --m-values 1,2,3,4,5,6,8,12,16,24,32,64,128,256 \
+        --n 4096 --k 4096 --group-size 128 \
         --warmup 20 --iterations 100 --output kernel-results.json
 """
 
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import time
 from pathlib import Path
@@ -23,6 +26,15 @@ from pathlib import Path
 import torch
 
 from gptqmodel.utils.gptq_pro import ensure_gptq_pro_loaded
+
+
+DEFAULT_M_VALUES = "1,2,3,4,5,6,8,12,16,24,32,64,128,256"
+GEMV_MAX_M = 4
+GEMV_THREADS = 128
+GEMV_N_PER_CTA = 32
+M_PER_CTA = 16
+N_PER_AMPERE_CTA = 256
+N_PER_LEGACY_CTA = 64
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -37,7 +49,7 @@ def parse_int_list(value: str) -> list[int]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--m-values", type=parse_int_list, default=parse_int_list("1,4,8,16,64,256")
+        "--m-values", type=parse_int_list, default=parse_int_list(DEFAULT_M_VALUES)
     )
     parser.add_argument("--n", type=int, default=4096)
     parser.add_argument("--k", type=int, default=4096)
@@ -113,8 +125,8 @@ def check_numerics(
     columns: int,
 ) -> dict[str, float]:
     columns = min(columns, qweight.shape[1])
-    if columns >= 16:
-        columns = max(16, columns - columns % 16)
+    if columns >= 8:
+        columns = max(8, columns - columns % 8)
     qweight_subset = qweight[:, :columns].contiguous()
     scales_subset = scales[:, :columns].contiguous()
 
@@ -149,6 +161,39 @@ def check_numerics(
     }
 
 
+def selected_mode(mode: str, m: int, n: int, k: int) -> str:
+    if mode != "auto":
+        return mode
+    if m <= GEMV_MAX_M and k % 8 == 0:
+        return "gemv"
+    if n % 8 == 0 and k % 16 == 0:
+        return "ampere"
+    return "legacy"
+
+
+def launch_geometry(mode: str, m: int, n: int, k: int) -> dict[str, int | str]:
+    effective_mode = selected_mode(mode, m, n, k)
+    if effective_mode == "gemv":
+        grid_x = math.ceil(n / GEMV_N_PER_CTA)
+        grid_y = 1
+        threads = GEMV_THREADS
+    elif effective_mode == "ampere":
+        grid_x = math.ceil(m / M_PER_CTA)
+        grid_y = math.ceil(n / N_PER_AMPERE_CTA)
+        threads = 128
+    else:
+        grid_x = math.ceil(m / M_PER_CTA)
+        grid_y = math.ceil(n / N_PER_LEGACY_CTA)
+        threads = 32
+    return {
+        "selected_mode": effective_mode,
+        "grid_x": grid_x,
+        "grid_y": grid_y,
+        "grid_ctas": grid_x * grid_y,
+        "threads_per_cta": threads,
+    }
+
+
 def benchmark_mode(
     module,
     activations: torch.Tensor,
@@ -158,15 +203,15 @@ def benchmark_mode(
     mode: str,
     warmup: int,
     iterations: int,
-) -> dict[str, float | str]:
+) -> dict[str, float | str | int]:
     for _ in range(warmup):
         module.gptq_pro_gemm(activations, qweight, scales, group_size, mode)
     torch.cuda.synchronize(activations.device)
 
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
     times_ms: list[float] = []
     for _ in range(iterations):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
         start.record()
         module.gptq_pro_gemm(activations, qweight, scales, group_size, mode)
         end.record()
@@ -195,14 +240,15 @@ def benchmark_mode(
         "p95_ms": p95_ms,
         "effective_dense_tflops": tflops,
         "minimum_bandwidth_gbs": minimum_bandwidth_gbs,
+        **launch_geometry(mode, m, n, k),
     }
 
 
 def applicable_modes(m: int, n: int, k: int) -> list[str]:
     modes = ["auto", "legacy"]
-    if m <= 4 and k % 8 == 0:
+    if m <= GEMV_MAX_M and k % 8 == 0:
         modes.append("gemv")
-    if n % 16 == 0 and k % 16 == 0:
+    if n % 8 == 0 and k % 16 == 0:
         modes.append("ampere")
     return modes
 
@@ -228,8 +274,10 @@ def main() -> None:
         "cuda_runtime": torch.version.cuda,
         "device": properties.name,
         "compute_capability": f"{major}.{minor}",
+        "multiprocessor_count": properties.multi_processor_count,
         "total_memory_bytes": properties.total_memory,
         "shape": {"n": args.n, "k": args.k, "group_size": args.group_size},
+        "m_values": args.m_values,
         "warmup": args.warmup,
         "iterations": args.iterations,
         "results": [],
@@ -237,6 +285,7 @@ def main() -> None:
 
     print(
         f"GPTQ-Pro raw kernel benchmark on {properties.name} (sm_{major}{minor}), "
+        f"SMs={properties.multi_processor_count}, "
         f"N={args.n}, K={args.k}, group={args.group_size}"
     )
     for m in args.m_values:
@@ -266,7 +315,8 @@ def main() -> None:
             result = {"m": m, **timing, "numerical": numerical}
             report["results"].append(result)
             print(
-                f"M={m:4d} mode={mode:7s} median={timing['median_ms']:.4f} ms "
+                f"M={m:4d} mode={mode:7s} selected={timing['selected_mode']:7s} "
+                f"ctas={timing['grid_ctas']:4d} median={timing['median_ms']:.4f} ms "
                 f"p95={timing['p95_ms']:.4f} ms "
                 f"TFLOP/s={timing['effective_dense_tflops']:.2f} "
                 f"cos={numerical['cosine_similarity']:.8f}"
