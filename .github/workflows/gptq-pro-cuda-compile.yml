@@ -12,7 +12,9 @@ on:
       - ".github/workflows/gptq-pro-cuda-compile.yml"
   push:
     branches:
+      - main
       - perf/ampere-kernel-pipeline
+      - perf/kernel-optimizations-v3
     paths:
       - "gptqmodel_ext/gptq_pro/**"
       - "gptqmodel/utils/gptq_pro.py"
@@ -80,7 +82,7 @@ jobs:
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_87,code=sm_87 \
             -gencode arch=compute_87,code=compute_87 \
-            gptq_pro_validate.cu gptq_pro_kernel.cu \
+            gptq_pro_validate.cu gptq_pro_kernel_v3.cu \
             -o /tmp/gptq_pro_validate
       - name: Record binary metadata
         run: |
@@ -116,10 +118,10 @@ jobs:
 
           root = Path.cwd()
           extension = load(
-              name="gptqmodel_gptq_pro_ci",
+              name="gptqmodel_gptq_pro_ci_v3",
               sources=[
                   str(root / "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp"),
-                  str(root / "gptqmodel_ext/gptq_pro/gptq_pro_kernel.cu"),
+                  str(root / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu"),
               ],
               extra_cflags=["-O3", "-std=c++17"],
               extra_cuda_cflags=[
