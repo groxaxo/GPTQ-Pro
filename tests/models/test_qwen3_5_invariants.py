@@ -6,8 +6,8 @@
 
 These tests intentionally avoid checkpoints and GPUs. They lock the loader and
 layout split between multimodal, flat text-only and nested language-model-only
-variants; preserve auxiliary MTP tensors; and keep the MoE module walk aligned
-with real forward execution order.
+variants; preserve auxiliary MTP tensors; and keep the hybrid/MoE module walk
+aligned with real forward execution order.
 """
 import pytest
 
@@ -21,6 +21,7 @@ qwen3_5_text = pytest.importorskip("gptqmodel.models.definitions.qwen3_5_text")
 import torch.nn as nn  # noqa: E402
 from transformers import AutoModelForCausalLM  # noqa: E402
 from transformers.models.auto import AutoModelForImageTextToText  # noqa: E402
+from transformers.models.qwen3_5 import Qwen3_5Config  # noqa: E402
 
 from gptqmodel.utils.model import MODALITY  # noqa: E402
 
@@ -73,6 +74,7 @@ def test_dense_multimodal_variant_uses_vision_lifecycle():
     from gptqmodel.models.definitions._qwen3_5_vision import Qwen3_5VisionMixin
 
     cls = Qwen3_5QModel
+    assert cls.config_class is Qwen3_5Config
     assert cls.loader is AutoModelForImageTextToText
     assert cls.require_load_processor is True
     assert cls.modality == [MODALITY.TEXT, MODALITY.IMAGE_TO_TEXT]
@@ -135,20 +137,40 @@ def test_vision_tower_never_enters_quantization_tree():
             assert name not in leaves
 
 
-def test_hybrid_attention_paths_are_declared_for_dense_and_moe_variants():
+def test_hybrid_attention_paths_follow_transformers_execution_order():
+    expected_self_attention = (
+        "q_proj:0",
+        "q_norm:!:0",
+        "k_proj:0",
+        "k_norm:!:0",
+        "v_proj:0",
+        "o_proj:1",
+    )
+    expected_linear_attention = (
+        "in_proj_qkv:0",
+        "in_proj_z:0",
+        "in_proj_b:!:0",
+        "in_proj_a:!:0",
+        "conv1d:!:1",
+        "norm:!:1",
+        "out_proj:1",
+    )
+
     for cls in ALL_QWEN35_QMODELS:
         subtree = _layer_subtree(cls)
-        assert "self_attn" in subtree
-        assert "linear_attn" in subtree
-        assert subtree["linear_attn"] == (
-            "norm:!",
-            "conv1d:!",
-            "in_proj_qkv:0",
-            "in_proj_z:1",
-            "in_proj_b:!:1",
-            "in_proj_a:!:1",
-            "out_proj:2",
-        )
+        assert subtree["self_attn"] == expected_self_attention
+        assert subtree["linear_attn"] == expected_linear_attention
+
+
+def test_linear_attention_parallel_input_projections_share_subset_zero():
+    for cls in ALL_QWEN35_QMODELS:
+        entries = _layer_subtree(cls)["linear_attn"]
+        groups = {entry.split(":", 1)[0]: entry.split(":")[-1] for entry in entries}
+        assert groups["in_proj_qkv"] == "0"
+        assert groups["in_proj_z"] == "0"
+        assert groups["in_proj_b"] == "0"
+        assert groups["in_proj_a"] == "0"
+        assert groups["out_proj"] == "1"
 
 
 def test_moe_shared_expert_precedes_routed_experts():
