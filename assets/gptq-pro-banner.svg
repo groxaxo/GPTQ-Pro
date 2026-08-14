@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">GPTQ-Pro — Ampere-native INT4 quantization and inference</title>
+  <desc id="desc">A dark futuristic banner with violet and blue gradients, a stylized quantization core, and Qwen readiness labels.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#03050d"/>
+      <stop offset=".46" stop-color="#090b1d"/>
+      <stop offset="1" stop-color="#071127"/>
+    </linearGradient>
+    <linearGradient id="titleGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".48" stop-color="#d8ddff"/>
+      <stop offset=".72" stop-color="#8e5cff"/>
+      <stop offset="1" stop-color="#2e9cff"/>
+    </linearGradient>
+    <linearGradient id="neon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b24cff"/>
+      <stop offset=".52" stop-color="#6d5cff"/>
+      <stop offset="1" stop-color="#21b8ff"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx=".75" cy=".38" r=".58">
+      <stop offset="0" stop-color="#7047ff" stop-opacity=".38"/>
+      <stop offset=".55" stop-color="#2448d9" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#071127" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx=".23" cy=".15" r=".65">
+      <stop offset="0" stop-color="#a23bff" stop-opacity=".17"/>
+      <stop offset="1" stop-color="#03050d" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" fill="none" stroke="#7a79ff" stroke-opacity=".07" stroke-width="1"/>
+    </pattern>
+    <filter id="blur24"><feGaussianBlur stdDeviation="24"/></filter>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softGlow">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="round"><rect x="8" y="8" width="1584" height="504" rx="30"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#round)">
+    <rect x="8" y="8" width="1584" height="504" rx="30" fill="url(#bg)"/>
+    <rect x="8" y="8" width="1584" height="504" rx="30" fill="url(#grid)"/>
+    <rect x="8" y="8" width="1584" height="504" rx="30" fill="url(#glowA)"/>
+    <rect x="8" y="8" width="1584" height="504" rx="30" fill="url(#glowB)"/>
+
+    <path d="M1040 14C1270 72 1433 53 1595 6v507H874c161-115 230-237 166-499Z" fill="#111944" opacity=".26"/>
+    <path d="M985 506c180-127 294-262 318-491" fill="none" stroke="url(#neon)" stroke-opacity=".16" stroke-width="2"/>
+    <path d="M1068 506c172-120 293-271 349-492" fill="none" stroke="#29b7ff" stroke-opacity=".11" stroke-width="2"/>
+    <path d="M1177 506c151-113 258-261 318-492" fill="none" stroke="#a74dff" stroke-opacity=".11" stroke-width="2"/>
+
+    <g opacity=".5">
+      <circle cx="989" cy="92" r="2" fill="#9d7bff"/>
+      <circle cx="1096" cy="49" r="1.4" fill="#53baff"/>
+      <circle cx="1377" cy="88" r="2.4" fill="#fff"/>
+      <circle cx="1492" cy="170" r="1.5" fill="#a964ff"/>
+      <circle cx="1272" cy="441" r="1.8" fill="#6ac9ff"/>
+      <circle cx="889" cy="421" r="1.2" fill="#fff"/>
+      <circle cx="1550" cy="369" r="2" fill="#7b5cff"/>
+    </g>
+
+    <g transform="translate(82 62)">
+      <g>
+        <rect width="258" height="42" rx="21" fill="#11152d" stroke="#8058ff" stroke-opacity=".85"/>
+        <circle cx="23" cy="21" r="6" fill="#24ce8a" filter="url(#glow)"/>
+        <text x="42" y="27" fill="#e7e9ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2.4">AMPERE-FIRST RUNTIME</text>
+      </g>
+
+      <text x="0" y="153" fill="url(#titleGrad)" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="108" font-weight="900" letter-spacing="-4">GPTQ-PRO</text>
+      <text x="4" y="198" fill="#c7cbea" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="25" font-weight="500" letter-spacing="1.3">
+        Symmetric INT4 quantization and native-qweight CUDA inference
+      </text>
+      <text x="4" y="235" fill="#7f88ad" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="500">
+        Focused kernels. Guarded recipes. Measurable quality.
+      </text>
+
+      <g transform="translate(0 282)" font-family="Inter,Segoe UI,Arial,sans-serif">
+        <g>
+          <rect width="232" height="54" rx="14" fill="#0d1229" stroke="#6c63ff" stroke-opacity=".55"/>
+          <text x="20" y="22" fill="#858db5" font-size="12" font-weight="700" letter-spacing="1.7">NATIVE TARGETS</text>
+          <text x="20" y="42" fill="#f2f3ff" font-size="16" font-weight="800">SM80 · SM86 · SM87</text>
+        </g>
+        <g transform="translate(248)">
+          <rect width="246" height="54" rx="14" fill="#0d1229" stroke="#7c55ff" stroke-opacity=".55"/>
+          <text x="20" y="22" fill="#858db5" font-size="12" font-weight="700" letter-spacing="1.7">CHECKPOINT CONTRACT</text>
+          <text x="20" y="42" fill="#f2f3ff" font-size="16" font-weight="800">GPTQ / GPTQ_V2 · INT4</text>
+        </g>
+        <g transform="translate(510)">
+          <rect width="272" height="54" rx="14" fill="#0d1229" stroke="#35a8ff" stroke-opacity=".55"/>
+          <text x="20" y="22" fill="#858db5" font-size="12" font-weight="700" letter-spacing="1.7">QWEN STATUS</text>
+          <text x="20" y="42" fill="#f2f3ff" font-size="16" font-weight="800">3.5 / 3.6 ✓ · 3.8 TRACK</text>
+        </g>
+      </g>
+
+      <g transform="translate(0 374)">
+        <rect width="780" height="1" fill="url(#neon)" opacity=".7"/>
+        <text x="0" y="34" fill="#767fa7" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="15">
+          MAX_QUALITY_4BIT  //  DESC_ACT=FALSE  //  FP16 ACTIVATIONS  //  NO DUPLICATE PACKING
+        </text>
+      </g>
+    </g>
+
+    <g transform="translate(1130 258)">
+      <circle r="169" fill="#4f3bff" opacity=".12" filter="url(#blur24)"/>
+      <circle r="124" fill="none" stroke="#654cff" stroke-opacity=".24" stroke-width="1.5"/>
+      <circle r="104" fill="none" stroke="#28afff" stroke-opacity=".18" stroke-width="1"/>
+      <g filter="url(#softGlow)">
+        <path d="M0-127 110-64 110 64 0 127-110 64-110-64Z" fill="#080c1d" stroke="url(#neon)" stroke-width="7"/>
+        <path d="M0-94 81-47 81 47 0 94-81 47-81-47Z" fill="#101636" stroke="#8170ff" stroke-opacity=".75" stroke-width="2"/>
+        <path d="M-26-51h52c42 0 69 27 69 67 0 18-6 34-18 46l28 30-28 25-30-33c-7 2-14 3-22 3h-51c-42 0-69-27-69-69s27-69 69-69Zm2 38c-20 0-32 12-32 31 0 20 12 32 32 32h36l-19-21 28-24 24 27c9-5 14-14 14-26 0-19-12-31-32-31Z" fill="url(#titleGrad)"/>
+      </g>
+      <g opacity=".8">
+        <path d="M-165 0h42M123 0h42M0-165v42M0 123v42" stroke="#6b7dff" stroke-width="2"/>
+        <circle cx="-165" cy="0" r="4" fill="#9b5cff"/>
+        <circle cx="165" cy="0" r="4" fill="#29b7ff"/>
+        <circle cx="0" cy="-165" r="4" fill="#835cff"/>
+        <circle cx="0" cy="165" r="4" fill="#29b7ff"/>
+      </g>
+    </g>
+
+    <g transform="translate(1024 425)" font-family="Inter,Segoe UI,Arial,sans-serif">
+      <rect width="342" height="52" rx="26" fill="#0b1025" stroke="url(#neon)" stroke-opacity=".8"/>
+      <text x="171" y="21" text-anchor="middle" fill="#8c94ba" font-size="11" font-weight="700" letter-spacing="2">QWEN 3.8</text>
+      <text x="171" y="39" text-anchor="middle" fill="#f0f2ff" font-size="14" font-weight="800" letter-spacing=".8">FAIL-CLOSED READINESS TRACK</text>
+    </g>
+  </g>
+
+  <rect x="8" y="8" width="1584" height="504" rx="30" fill="none" stroke="url(#neon)" stroke-opacity=".65" stroke-width="2"/>
+</svg>
