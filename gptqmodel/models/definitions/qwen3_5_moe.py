@@ -8,6 +8,10 @@ from gptqmodel.models.moe_lifecycle import GateUpDownMoELifecycleHooks
 
 from ...utils.model import MODALITY
 from ..base import BaseQModel
+from ._qwen3_5_common import (
+    QWEN3_5_LINEAR_ATTENTION_MODULES,
+    QWEN3_5_SELF_ATTENTION_MODULES,
+)
 from ._qwen3_5_vision import Qwen3_5VisionMixin
 
 
@@ -15,16 +19,8 @@ from ._qwen3_5_vision import Qwen3_5VisionMixin
 # (text + multimodal). Only the module_tree prefix differs between variants.
 QWEN3_5_MOE_LAYER_SUBTREE = {
     "input_layernorm": ("input_layernorm:!",),
-    "self_attn": ("q_norm:!", "q_proj:0", "k_norm:!", "k_proj:0", "v_proj:0", "o_proj:1"),
-    "linear_attn": (
-        "norm:!",
-        "conv1d:!",
-        "in_proj_qkv:0",
-        "in_proj_z:1",
-        "in_proj_b:!:1",
-        "in_proj_a:!:1",
-        "out_proj:2",
-    ),
+    "self_attn": QWEN3_5_SELF_ATTENTION_MODULES,
+    "linear_attn": QWEN3_5_LINEAR_ATTENTION_MODULES,
     "post_attention_layernorm": ("post_attention_layernorm:!",),
     "mlp:moe:?": {
         "gate": ("gate:!",),  # Router stays in source precision.
