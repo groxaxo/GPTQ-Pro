@@ -57,7 +57,6 @@ QWEN3_5_27B_TEXT_SIGNATURE = {
     "linear_key_head_dim": 128,
     "linear_value_head_dim": 128,
     "linear_conv_kernel_dim": 4,
-    "full_attention_interval": 4,
     "max_position_embeddings": 262144,
     "vocab_size": 248320,
 }
