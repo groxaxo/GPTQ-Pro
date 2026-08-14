@@ -78,8 +78,8 @@ def _official_qwen36_27b_payload() -> dict:
         "tie_word_embeddings": False,
         "transformers_version": "4.57.1",
         "video_token_id": 248057,
-        # Official Qwen3.5/Qwen3.6 configs use the legacy qwen3_5 value here;
-        # current Transformers normalizes it to Qwen3_5VisionConfig.
+        # Transformers 5.4 retains the legacy qwen3_5 vision type; newer
+        # releases normalize the same config to qwen3_5_vision.
         "vision_config": {
             "deepstack_visual_indexes": [],
             "depth": 27,
@@ -168,7 +168,7 @@ def test_official_qwen36_27b_config_routes_without_weight_download(tmp_path):
     assert definition is Qwen3_5QModel
     assert Qwen3_5QModel.config_class is Qwen3_5Config
     assert config.text_config.model_type == "qwen3_5_text"
-    assert config.vision_config.model_type == "qwen3_5_vision"
+    assert config.vision_config.model_type in {"qwen3_5", "qwen3_5_vision"}
     assert summary == {
         "model_type": "qwen3_5",
         "architecture": "Qwen3_5ForConditionalGeneration",
