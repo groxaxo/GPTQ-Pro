@@ -1,112 +1,79 @@
-# GPTQ-Pro
+<p align="center">
+  <img src="assets/gptq-pro-banner.svg" alt="GPTQ-Pro — Ampere-native INT4 quantization and inference" width="100%">
+</p>
 
-**GPTQ-Pro** is an experimental fork of
-[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel) focused on one
-runtime path: symmetric INT4 GPTQ inference on modern NVIDIA GPUs, with native
-build targets for Ampere (`sm_80`, `sm_86`, and `sm_87`).
+<h1 align="center">GPTQ-Pro</h1>
 
-> This is not the official GPTQModel release. Use upstream GPTQModel when you
-> need its full multi-backend feature set. This fork deliberately removes AWQ,
-> Marlin, ExLlama, BitBLAS, Machete, QQQ, BitsAndBytes, GGUF, FP8, RTN,
-> vLLM/SGLang integration, and MLX export paths.
+<p align="center">
+  <strong>A focused, Ampere-first GPTQ fork for high-quality symmetric INT4 quantization and native-qweight CUDA inference.</strong>
+</p>
 
-The Python distribution and import names remain **`GPTQModel`** and
-**`gptqmodel`** for API and checkpoint compatibility with upstream.
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-6d5cff?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2e9cff?style=flat-square"></a>
+  <a href="docs/KERNEL_V3.md"><img alt="CUDA" src="https://img.shields.io/badge/CUDA-sm80%20%7C%20sm86%20%7C%20sm87-24ce8a?style=flat-square"></a>
+  <a href="docs/QWEN35_QWEN36.md"><img alt="Qwen" src="https://img.shields.io/badge/Qwen-3.5%20%2F%203.6-8e5cff?style=flat-square"></a>
+  <a href="docs/QWEN38.md"><img alt="Qwen 3.8 readiness" src="https://img.shields.io/badge/Qwen%203.8-readiness-f19cff?style=flat-square"></a>
+</p>
 
-## Current support contract
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#qwen-recipes">Qwen recipes</a> ·
+  <a href="#runtime-contract">Runtime contract</a> ·
+  <a href="docs/KERNEL_V3.md">Kernel design</a> ·
+  <a href="docs/ASSESSMENT_AND_ROADMAP.md">Roadmap</a>
+</p>
 
-| Area | Supported in this fork |
+> [!IMPORTANT]
+> **Qwen 3.8 status — 15 August 2026:** `qwen3.8-max-preview` is a hosted
+> preview, but no official Qwen-owned downloadable checkpoint/model card was
+> verified during this update. GPTQ-Pro ships a guarded capacity planner and
+> release-day recipe—not an unverified compatibility claim. See
+> [`docs/QWEN38.md`](docs/QWEN38.md).
+
+GPTQ-Pro is an experimental fork of
+[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel) intentionally
+optimized around one path: **symmetric INT4 GPTQ on modern NVIDIA GPUs**. It
+retains the upstream Python distribution/import names, `GPTQModel` and
+`gptqmodel`, for API and checkpoint compatibility.
+
+## Why GPTQ-Pro
+
+| | Capability | What it means |
+|---|---|---|
+| ⚡ | **Ampere-native V3 kernel** | Specialized decode, Tensor Core prefill, and validated shape fallback paths |
+| 🧠 | **Quality-first recipes** | Group-aware reordering, MSE scale search, adaptive damping, smoothing, and optional GPTAQ feedback |
+| 📦 | **Native `int32 qweight`** | No persistent duplicate pair-packed weights and no startup repack |
+| 🛡️ | **Fail-closed drivers** | Architecture, modality, decoder roots, output paths, and calibration inputs are checked before quantization |
+| 🔬 | **Measurement over claims** | Numerical validators, raw-kernel benchmarks, and machine-readable results |
+
+This is **not** the official GPTQModel release. Use upstream when you need its
+full multi-backend surface. This fork deliberately excludes AWQ, Marlin,
+ExLlama, BitBLAS, Machete, QQQ, BitsAndBytes, GGUF, FP8, RTN, MLX export, and
+vLLM/SGLang integration from the supported runtime contract.
+
+## Runtime contract
+
+| Area | Supported |
 |---|---|
 | Quantization method | `METHOD.GPTQ` |
 | Checkpoint formats | `FORMAT.GPTQ`, `FORMAT.GPTQ_V2` |
 | Runtime selectors | `BACKEND.AUTO`, `BACKEND.GPTQ_PRO` |
-| Runtime platform | Linux + NVIDIA CUDA, compute capability 8.0 or newer |
-| Runtime weights | Symmetric 4-bit GPTQ, `desc_act=False`, native `int32 qweight` packing |
-| Runtime activations | FP16; non-FP16 inputs are converted to FP16 |
+| Platform | Linux + NVIDIA CUDA, compute capability 8.0+ |
+| Weights | symmetric 4-bit, `desc_act=False`, native `int32 qweight` |
+| Activations | FP16; other inputs are converted to FP16 |
 | Group sizes | `-1`, `16`, `32`, `64`, `128`, `256`, `512`, `1024` |
 | Shape constraints | input features divisible by 16; output features divisible by 8 |
 | Adapters | LoRA on the GPTQ-Pro linear path |
 
-`BACKEND.AUTO_TRAINABLE` remains in the compatibility enum, but the only runtime
-kernel declares `SUPPORTS_TRAINING=False`; there is currently no trainable
-quantized backend.
+The extension embeds native cubins for `sm_80`, `sm_86`, and `sm_87`, plus a
+`compute_87` PTX fallback. Ampere is the primary development target. ROCm, MPS,
+CPU inference, asymmetric weights, act-order checkpoints, native BF16
+activations, and non-4-bit runtime inference are outside the contract.
 
-The extension embeds native cubins for `sm_80`/`sm_86`/`sm_87` and a
-`compute_87` PTX fallback. Ada and Hopper devices may JIT-compile that PTX, but
-Ampere is the primary development target. ROCm, MPS, CPU inference, asymmetric
-weights, act-order checkpoints, native BF16, and non-4-bit inference are not
-supported by the GPTQ-Pro runtime.
+## Quick start
 
-## Ampere kernel architecture
-
-`gptqmodel_ext/gptq_pro/` contains three dispatch paths:
-
-1. **Fused decode / very small batches (`M <= 4`)**
-   - four warps cooperatively own a 32-column output tile;
-   - every warp processes an interleaved quarter of K;
-   - each LOP3-decoded native `qweight` word is reused across all active M rows;
-   - per-thread scales remain cached until the quantization group changes;
-   - deterministic shared-memory split-K reduction preserves FP32 accumulation.
-2. **Aligned medium-batch and prefill GEMM**
-   - four warps per CTA, producing a `16 × 256` output region;
-   - double-buffered `cp.async` global-to-shared A/Q pipeline;
-   - scale rows are staged only when K crosses a quantization-group boundary;
-   - Tensor Core `mma.sync.m16n8k16` with FP32 accumulation;
-   - LOP3-assisted INT4-to-FP16 fragment conversion;
-   - optimized predicated tails for every runtime-valid `N % 8 == 0` shape;
-   - vectorized FP16 output stores.
-3. **General-shape fallback**
-   - retains the validator-backed one-warp V2 implementation;
-   - handles compatible direct-extension edge shapes outside the public runtime
-     contract.
-
-All three paths consume the checkpoint's original `int32 qweight` directly. The
-runtime does not materialize a second pair-packed weight tensor, avoiding a
-persistent duplicate of the model's quantized weights and eliminating a packing
-transform during module initialization.
-
-`AUTO` selects the fused small-`M` kernel first, then the pipelined Tensor Core
-path, then the general fallback. Experts can force a path for parity testing:
-
-```bash
-export GPTQMODEL_GPTQ_PRO_KERNEL=gemv    # auto, gemv, ampere, or legacy
-```
-
-The override is intended for diagnostics and benchmarking. Forced modes reject
-incompatible shapes rather than silently changing behavior.
-
-The V3 design and exact validation contract are documented in
-[`docs/KERNEL_V3.md`](docs/KERNEL_V3.md).
-
-### Remaining kernel work
-
-The runtime is materially more Ampere-aware than the original scaffold, but the
-following remain open engineering targets:
-
-- physical-GPU crossover tuning around `M=4..16`;
-- small-M Tensor Core split-K tile families;
-- `ldmatrix`-based shared-to-register loading and shared-memory swizzling;
-- wider K stages and deeper asynchronous pipelines;
-- architecture-specific tile selection and bounded autotuning;
-- native or fused-input BF16 execution;
-- fused QKV, gate/up, and grouped-MoE execution;
-- production GPU validation across the full advertised shape/group matrix.
-
-No performance lead is claimed without checked-in measurements. See
-[`docs/ASSESSMENT_AND_ROADMAP.md`](docs/ASSESSMENT_AND_ROADMAP.md).
-
-## Installation
-
-### Prerequisites
-
-- Linux;
-- Python 3.10 or newer;
-- an NVIDIA GPU with compute capability 8.0 or newer;
-- a CUDA toolkit containing `nvcc` compatible with the installed PyTorch;
-- a C++17 compiler and Ninja;
-- enough free disk space for extension builds and optional quantization offload.
-
-### From source
+### Install from source
 
 ```bash
 git clone https://github.com/groxaxo/GPTQ-Pro.git
@@ -114,46 +81,26 @@ cd GPTQ-Pro
 
 python -m venv .venv
 source .venv/bin/activate
-
 python -m pip install --upgrade pip wheel setuptools
 python -m pip install -e .
 ```
 
-The CUDA extension is loaded from a compatible prebuilt module when available;
-otherwise it is JIT-compiled on first use. Set
-`GPTQMODEL_EXT_BUILD=/path/to/cache` to choose the build directory and
-`GPTQMODEL_EXT_VERBOSE=1` for verbose compilation logs.
-
-The public extension registry manages only the generic CPU helper extensions:
+The CUDA extension loads a compatible prebuilt module when available and
+otherwise JIT-compiles on first use.
 
 ```bash
-python - <<'PY'
-from gptqmodel import extension
-print(extension.available_extensions())
-# ('pack_block_cpu', 'floatx_cpu')
-PY
+export GPTQMODEL_EXT_BUILD="$HOME/.cache/gptq-pro"
+export GPTQMODEL_EXT_VERBOSE=1
 ```
 
-### Docker
-
-```bash
-docker build -t gptq-pro .
-docker run --rm -it --gpus all \
-  -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface" \
-  gptq-pro
-```
-
-The image installs the base GPTQ-Pro package only; it does not install removed
-vLLM, SGLang, Marlin, or MLX extras.
-
-## Quantization quick start
+### Generic quality recipe
 
 ```python
 from gptqmodel import BACKEND, GPTQModel, QuantizeConfig
 
 calibration = [
-    "Explain why calibration data should resemble the model's real workload.",
-    "Write a Python function that validates JSONL input.",
+    "Explain the trade-offs between latency, memory use, and quantization error.",
+    "Write a robust Python function that validates JSONL input.",
 ]
 
 qcfg = QuantizeConfig.quality_4bit(group_size=128)
@@ -168,37 +115,127 @@ model.quantize(calibration, batch_size=1, backend=BACKEND.AUTO)
 model.save("model-gptq-pro-4bit")
 ```
 
-Use representative, varied calibration samples. Large models can use disk
-offload and explicit dense/MoE device pools through `QuantizeConfig`. Avoid a
-Transformers `device_map="auto"` during quantization; placement is managed by
-GPTQ-Pro's quantization loop.
+Use representative calibration data. Do not pass a Transformers
+`device_map="auto"` during quantization; GPTQ-Pro's module loop owns placement.
 
-## Quantization recipes
+### Docker
 
-The recipe controls **offline quantization quality**. CUDA kernel optimization
-changes inference latency and throughput; it does not improve an already-created
-checkpoint's numerical quality.
+```bash
+docker build -t gptq-pro .
+docker run --rm -it --gpus all \
+  -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface" \
+  gptq-pro
+```
 
-| Recipe | Enabled behavior |
+## Recipe ladder
+
+| Preset | Intended use |
 |---|---|
-| `QuantizeConfig.fast_4bit(desc_act=False)` | Basic symmetric 4-bit GPTQ compatible with the local runtime |
-| `QuantizeConfig.quality_4bit()` | `desc_act=False`, group-aware reordering, MSE scale search, activation-weighted MSE, adaptive damping, and fallback smoothing |
-| `QuantizeConfig.max_quality_4bit()` | `quality_4bit()` plus GPTAQ activation-aware error feedback |
-| `QuantizeConfig.experimental_3bit_rotation()` | 3-bit GPTQ + GPTAQ + Hadamard rotation for supported architectures; **not executable by the 4-bit-only GPTQ-Pro kernel** |
+| `QuantizeConfig.fast_4bit(desc_act=False)` | Plumbing tests and rapid baselines |
+| `QuantizeConfig.quality_4bit()` | Recommended quality/time balance |
+| `QuantizeConfig.max_quality_4bit()` | Highest-quality named 4-bit preset; adds GPTAQ feedback |
+| `QuantizeConfig.experimental_3bit_rotation()` | Export experiment only; the local runtime is 4-bit-only |
 
-Important details:
+For a quality-focused workstation checkpoint up to roughly 70B parameters,
+start with `max_quality_4bit(group_size=64)`, 128 representative samples,
+1,024 tokens, batch size 1, and disk offload. Measure against group 128 before
+accepting the extra quantization cost.
 
-- `max_quality_4bit()` is the highest-quality named 4-bit preset currently
-  provided, but it does **not** automatically enable FOEM or rotation.
-- `quality_4bit()` is the recommended balance when quantization time matters.
-- The generic `fast_4bit()` preset inherits the base act-order default unless
-  `desc_act=False` is supplied. Act-order checkpoints cannot run on GPTQ-Pro.
-- The 3-bit preset is export-only in this fork because no local 3-bit runtime is
-  shipped.
+## Qwen recipes
 
-## Raw-kernel benchmark
+| Family | Status | Driver / guide |
+|---|---|---|
+| Qwen 3.5 / 3.6 dense text | supported | [`quant_qwen36_obliterated_gptqpro.py`](scripts/quant_qwen36_obliterated_gptqpro.py) |
+| Qwen 3.5 / 3.6 MoE and multimodal MoE | supported | [`quant_qwen3_5_moe.py`](scripts/quant_qwen3_5_moe.py) |
+| Qwen 3.8 | readiness track; exact weights/layout pending | [`QWEN38.md`](docs/QWEN38.md) · [`plan_qwen38_gptqpro.py`](scripts/plan_qwen38_gptqpro.py) |
 
-Measure the CUDA extension without model-loading or tokenization overhead:
+### Qwen 3.5 / 3.6 dense dry run
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \
+  --model /path/to/source \
+  --out /path/to/new-output \
+  --preset quality \
+  --dry-run
+```
+
+### Qwen 3.5 / 3.6 MoE dry run
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen3_5_moe.py \
+  --model /path/or/hf-id \
+  --out /path/to/new-output \
+  --calib auto \
+  --preset quality \
+  --offload-disk \
+  --dry-run
+```
+
+### Qwen 3.8 capacity check
+
+```bash
+python scripts/plan_qwen38_gptqpro.py \
+  --assume-qwen38-max \
+  --gpu-count 3 \
+  --gpu-vram-gb 24 \
+  --ram-gb 128 \
+  --disk-free-gb 2000
+```
+
+The planner distinguishes **Qwen3.8** from **Qwen3-8B**, estimates BF16/FP8 and
+GPTQ INT4 storage, chooses a recipe for smaller future checkpoints, and blocks
+workstation runs that cannot fit.
+
+## Ampere kernel architecture
+
+`gptqmodel_ext/gptq_pro/` contains three dispatch paths:
+
+1. **Fused decode / very small batches (`M <= 4`)**
+   - four warps cooperatively own a 32-column output tile;
+   - each decoded native `qweight` word is reused across active rows;
+   - scales remain cached until the quantization group changes;
+   - shared-memory split-K reduction preserves FP32 accumulation.
+2. **Aligned medium-batch and prefill GEMM**
+   - four warps produce a `16 × 256` output region;
+   - double-buffered `cp.async` A/Q pipeline;
+   - Tensor Core `mma.sync.m16n8k16` with FP32 accumulation;
+   - LOP3-assisted INT4-to-FP16 conversion and vectorized output stores.
+3. **General-shape fallback**
+   - validator-backed one-warp V2 implementation;
+   - compatible edge shapes outside the public optimized contract.
+
+`BACKEND.AUTO` selects the fused small-`M` path, then the pipelined Tensor Core
+path, then the fallback. Force a path only for diagnostics:
+
+```bash
+export GPTQMODEL_GPTQ_PRO_KERNEL=gemv  # auto, gemv, ampere, or legacy
+```
+
+See [`docs/KERNEL_V3.md`](docs/KERNEL_V3.md) for the exact dispatch and
+validation contract.
+
+## Selective source-precision preservation
+
+`QuantizeConfig.dynamic` accepts PCRE module-name overrides. Prefix a pattern
+with `-:` to skip matching modules.
+
+```python
+qcfg = QuantizeConfig.max_quality_4bit(group_size=64)
+qcfg.dynamic = {
+    "-:^model\.embed_tokens$": {},
+    "-:^lm_head$": {},
+    "-:^model\.layers\.0\.mlp\.down_proj$": {},
+}
+```
+
+The dense Qwen driver accepts a JSON file containing
+`modules_to_not_convert`. Entries are converted to exact anchored skip patterns.
+Do not use a broad `.*gate.*` rule: it would also skip quantizable `gate_proj`
+MLP weights.
+
+## Benchmark and validation
+
+Raw CUDA kernel benchmark:
 
 ```bash
 python scripts/benchmark_gptq_pro_kernel.py \
@@ -208,78 +245,14 @@ python scripts/benchmark_gptq_pro_kernel.py \
   --output kernel-results.json
 ```
 
-The benchmark:
-
-- reports median, mean, and p95 kernel time;
-- reports effective dense TFLOP/s and a conservative bandwidth lower bound;
-- compares AUTO against forced compatible specialized and legacy modes;
-- records selected dispatch, grid dimensions, CTA count, and threads per CTA;
-- checks a column subset against a PyTorch FP32 reference using FP16-dequantized
-  native `qweight` values;
-- records GPU, SM count, compute capability, PyTorch, and CUDA runtime information.
-
-Commit raw JSON results when making performance claims. Use Nsight Compute to
-confirm whether changes improve memory throughput, Tensor Core utilization,
-occupancy, and stall reasons rather than relying only on wall-clock timing.
-
-## Qwen 3.5 and Qwen 3.6
-
-Qwen 3.6 checkpoints intentionally reuse Qwen 3.5 Transformers classes and
-model types. The repository has explicit definitions for:
-
-- dense multimodal `qwen3_5`;
-- dense text-only `qwen3_5_text`;
-- multimodal MoE `qwen3_5_moe`;
-- flat text-only MoE `qwen3_5_moe_text`;
-- nested MoE checkpoints with `language_model_only=true`.
-
-The hybrid linear/full-attention decoder paths are quantized while Q/K norms,
-convolution/recurrent helpers, routers, vision towers, and `mtp.*` auxiliary
-heads remain in source precision. Full commands, layout checks, and limitations
-are documented in [`docs/QWEN35_QWEN36.md`](docs/QWEN35_QWEN36.md).
-
-Drivers:
+Complete RTX 3090 validation:
 
 ```bash
-# Flat dense text-only Qwen3.5/Qwen3.6
-CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \
-  --model /path/to/source \
-  --out /path/to/output \
-  --calibration-jsonl /path/to/calibration.jsonl \
-  --preset quality --nsample 64 --seqlen 512 --offload-disk --dry-run
-
-# Qwen3.5/Qwen3.6 MoE
-CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen3_5_moe.py \
-  --model /path/or/hf-id \
-  --out /path/to/output \
-  --calib auto --preset quality --nsample 16 --offload-disk --dry-run
+bash scripts/validate_gptq_pro_ampere.sh \
+  --gpu 0 --native-arch-only --require-speedup
 ```
 
-Run `--dry-run` first. Official integrated checkpoints should not need
-`--trust-remote-code`; enable it only for a derivative that genuinely requires
-repository-provided model code.
-
-## Selective / mixed-precision quantization
-
-`QuantizeConfig.dynamic` accepts PCRE module-name overrides. A `-:` prefix skips
-matching modules even when the model definition marks them as quantizable.
-
-```python
-qcfg = QuantizeConfig.quality_4bit(group_size=128)
-qcfg.dynamic = {
-    "-:^model\\.embed_tokens$": {},
-    "-:^lm_head$": {},
-    "-:^model\\.layers\\.0\\.mlp\\.down_proj$": {},
-}
-```
-
-`scripts/quant_qwen36_obliterated_gptqpro.py --dynamic-ignore-json <path>` reads
-`{"modules_to_not_convert": [...]}` and converts every entry to an exact,
-anchored skip pattern.
-
-## Validation
-
-CPU-side checks:
+CPU-side targeted checks:
 
 ```bash
 pytest -q \
@@ -289,50 +262,28 @@ pytest -q \
   tests/models/test_qwen3_5_invariants.py \
   tests/models/test_qwen3_5_vision.py \
   tests/test_qwen3_6_support.py \
-  tests/test_extension_registry.py
+  tests/test_qwen38_planner.py
 ```
 
-The kernel CI performs three independent gates:
-
-1. targeted Ruff/style and Python syntax checks;
-2. standalone CUDA compilation for `sm_80`, `sm_86`, `sm_87`, and PTX;
-3. compilation and import of the actual PyTorch C++/CUDA binding, followed by
-   CPU packing/dispatch tests.
-
-On a real GPU, build and run the standalone numerical validator:
-
-```bash
-cd gptqmodel_ext/gptq_pro
-nvcc -O3 -std=c++17 -arch=sm_86 \
-  -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ \
-  gptq_pro_validate.cu gptq_pro_kernel_v3.cu -o gptq_pro_validate
-./gptq_pro_validate
-```
-
-Or run the complete RTX 3090 validation and benchmark sequence:
-
-```bash
-bash scripts/validate_gptq_pro_ampere.sh \
-  --gpu 0 --native-arch-only --require-speedup
-```
-
-A real CUDA run, numerical comparison against the dense source checkpoint, and
-generation/perplexity checks remain required before treating a newly quantized
-model as production-ready.
+A real CUDA run, comparison against the source checkpoint, deterministic
+generation, perplexity/task checks, and multimodal validation remain mandatory
+before publishing a quantized model.
 
 ## Repository map
 
-- `gptqmodel/` — model loading, quantization, packing, and runtime integration;
-- `gptqmodel_ext/gptq_pro/` — GPTQ-Pro CUDA/C++ extension sources;
-- `scripts/benchmark_gptq_pro_kernel.py` — raw CUDA benchmark and parity checks;
-- `scripts/` — model quantization and validation helpers;
-- `tests/` — CPU and CUDA regression coverage;
-- `docs/KERNEL_V3.md` — fused decode, scale-cache, dispatch, and validation contract;
-- `docs/ASSESSMENT_AND_ROADMAP.md` — current engineering status and roadmap;
-- `docs/QWEN35_QWEN36.md` — Qwen architecture and driver guide.
+- `gptqmodel/` — loading, quantization, packing, and runtime integration;
+- `gptqmodel_ext/gptq_pro/` — CUDA/C++ kernel sources;
+- `scripts/` — model drivers, planners, benchmarks, and validators;
+- `tests/` — architecture, quantization, packing, and kernel regressions;
+- [`docs/KERNEL_V3.md`](docs/KERNEL_V3.md) — kernel design and dispatch;
+- [`docs/QWEN35_QWEN36.md`](docs/QWEN35_QWEN36.md) — supported Qwen layouts;
+- [`docs/QWEN38.md`](docs/QWEN38.md) — guarded Qwen 3.8 release recipe;
+- [`docs/ASSESSMENT_AND_ROADMAP.md`](docs/ASSESSMENT_AND_ROADMAP.md) — current status and engineering roadmap.
 
 ## Credits and license
 
-GPTQ-Pro remains based on the substantial work of Qubitium, ModelCloud, the
-GPTQ authors, AutoGPTQ maintainers, and other quantization-kernel researchers.
-See [`CREDITS.md`](CREDITS.md). The repository is licensed under Apache-2.0.
+GPTQ-Pro is built on the substantial work of Qubitium, ModelCloud, the GPTQ
+authors, AutoGPTQ maintainers, and the wider quantization-kernel community. See
+[`CREDITS.md`](CREDITS.md).
+
+Licensed under [Apache-2.0](LICENSE).
