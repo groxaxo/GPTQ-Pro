@@ -145,11 +145,24 @@ accepting the extra quantization cost.
 
 | Family | Status | Driver / guide |
 |---|---|---|
-| Qwen 3.5 / 3.6 dense text | supported | [`quant_qwen36_obliterated_gptqpro.py`](scripts/quant_qwen36_obliterated_gptqpro.py) |
+| Official Qwen 3.5 / 3.6 dense multimodal 27B | supported | [`quant_qwen3_5_27b_gptqpro.py`](scripts/quant_qwen3_5_27b_gptqpro.py) |
+| Qwen 3.5 / 3.6 flat dense text derivatives | supported | [`quant_qwen36_obliterated_gptqpro.py`](scripts/quant_qwen36_obliterated_gptqpro.py) |
 | Qwen 3.5 / 3.6 MoE and multimodal MoE | supported | [`quant_qwen3_5_moe.py`](scripts/quant_qwen3_5_moe.py) |
 | Qwen 3.8 | readiness track; exact weights/layout pending | [`QWEN38.md`](docs/QWEN38.md) · [`plan_qwen38_gptqpro.py`](scripts/plan_qwen38_gptqpro.py) |
 
-### Qwen 3.5 / 3.6 dense dry run
+### Official Qwen 3.5 / 3.6 27B config preflight
+
+```bash
+python scripts/quant_qwen3_5_27b_gptqpro.py \
+  --model Qwen/Qwen3.6-27B \
+  --preflight-only
+```
+
+The strict preflight verifies the canonical `qwen3_5`/`qwen3_5_text` routing,
+the 64-layer hybrid schedule, published dimensions, and the expected 400 packed
+decoder linears without downloading the model weights.
+
+### Flat dense text derivative dry run
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/quant_qwen36_obliterated_gptqpro.py \
@@ -259,6 +272,7 @@ pytest -q \
   tests/qcfg/test_gptq_pro.py \
   tests/kernels/test_selection.py \
   tests/kernels/test_gptq_pro_ampere_pipeline.py \
+  tests/test_qwen3_5_27b_official.py \
   tests/models/test_qwen3_5_invariants.py \
   tests/models/test_qwen3_5_vision.py \
   tests/test_qwen3_6_support.py \
