@@ -59,6 +59,12 @@ def _run_qwen3_8_architecture_preflight(args: Any):
             "27B architecture. Use the generic Qwen3.5-family driver only for "
             "a separately reviewed compatible derivative."
         )
+    if args.trust_remote_code:
+        raise SystemExit(
+            "official Qwen3.8-27B requires no remote code. Remove "
+            "--trust-remote-code; the release driver refuses to widen the "
+            "checkpoint trust boundary."
+        )
 
     installed_transformers = validate_qwen3_8_transformers_version()
     config = base_driver._load_config(args.model, args.trust_remote_code)

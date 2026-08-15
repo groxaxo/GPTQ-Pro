@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -178,6 +179,19 @@ def test_transformers_floor_is_explicit():
     assert validate_qwen3_8_transformers_version("5.15.0") == "5.15.0"
     with pytest.raises(RuntimeError, match="transformers>=5.8.0"):
         validate_qwen3_8_transformers_version("5.7.9")
+
+
+def test_release_driver_rejects_remote_code_opt_in():
+    driver = _load_release_driver()
+    args = SimpleNamespace(
+        allow_compatible_derivative=False,
+        trust_remote_code=True,
+        model=QWEN3_8_27B_MODEL_ID,
+        preflight_only=True,
+    )
+
+    with pytest.raises(SystemExit, match="requires no remote code"):
+        driver._run_qwen3_8_architecture_preflight(args)
 
 
 def test_release_report_promotion_is_fail_closed(tmp_path):
