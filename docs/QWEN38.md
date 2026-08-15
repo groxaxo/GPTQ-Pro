@@ -1,187 +1,224 @@
-# Qwen 3.8: guarded GPTQ-Pro recipe
+# Qwen3.8-27B support
 
-> **Status snapshot — 15 August 2026**
->
-> `qwen3.8-max-preview` is available as a hosted preview. Alibaba has announced
-> 2.4 trillion total parameters, and reporting describes a sparse multimodal MoE
-> using roughly 95 billion parameters per request. During this repository update,
-> no official Qwen-owned downloadable checkpoint, model card, tensor index,
-> Transformers architecture, or final open-weight license could be verified.
->
-> GPTQ-Pro therefore treats Qwen 3.8 as a **readiness track**, not a supported
-> checkpoint family. The repository will fail closed until an exact model
-> definition can be validated.
+## Status
 
-Primary references:
+**Supported for GPTQ-Pro source quantization as of 15 August 2026.**
 
-- Alibaba Cloud model documentation for `qwen3.8-max-preview`;
-- Reuters, 3 August 2026, on the announced 2.4T / approximately 95B-active scale;
-- the official Qwen organization on Hugging Face and ModelScope for the eventual
-  checkpoint and model card.
+The official [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B)
+checkpoint does not introduce a new Hugging Face model type. It intentionally
+reuses:
 
-## First: Qwen3.8 is not Qwen3-8B
+```text
+model_type = qwen3_5
+architectures = [Qwen3_5ForConditionalGeneration]
+text_config.model_type = qwen3_5_text
+```
 
-These names describe different things:
+This is architectural reuse, not a compatibility guess. The official vLLM
+recipe and NVIDIA NeMo AutoModel guide both document that Qwen3.8-27B has the
+same dense 27B dimensions and implementation as Qwen3.6-27B. GPTQ-Pro therefore
+routes it through the already hardened `Qwen3_5QModel` definition.
 
-| Name | Meaning |
+The supported contract is:
+
+| Property | Required value |
 |---|---|
-| `Qwen3-8B` | An 8-billion-parameter model from the Qwen3 generation |
-| `Qwen3.8` | A later Qwen generation/version, currently represented by `qwen3.8-max-preview` |
-| `Qwen3.8-27B` | A hypothetical/future 27B checkpoint name; do not assume it exists until Qwen publishes it |
+| Wrapper | `Qwen3_5ForConditionalGeneration` |
+| Decoder layers | 64 |
+| Layer schedule | 16 × (`linear`, `linear`, `linear`, `full`) |
+| Linear-attention layers | 48 |
+| Full-attention layers | 16 |
+| Hidden size | 5120 |
+| FFN intermediate size | 17408 |
+| Full-attention heads | 24 Q / 4 KV, head dim 256 |
+| Gated DeltaNet heads | 16 QK / 48 V, head dim 128 |
+| Native context | 262,144 |
+| Vision output width | 5120 |
+| MTP | exactly one in-checkpoint layer |
+| Expected packed GPTQ modules | 400 |
+| Remote code | not required and rejected by the strict release gate |
+| Transformers | `>=5.8.0` |
 
-The planner rejects a `Qwen3-8B` identifier when the requested workflow is
-Qwen 3.8.
+## Why there is no `qwen3_8` registry key
 
-## Reality check for a 3 × RTX 3090 workstation
+The official config still says `qwen3_5`. Adding a synthetic `qwen3_8` alias
+would make local behavior diverge from Transformers, vLLM, SGLang, NeMo, and the
+checkpoint itself. It would also hide incompatible community configs behind a
+marketing-name match.
 
-The user's lab profile is:
+GPTQ-Pro instead validates the complete structural signature and routes the
+model through `Qwen3_5QModel`. A checkpoint that changes the model type, layer
+schedule, dimensions, MTP depth, or remote-code trust boundary fails closed.
 
-- 3 × RTX 3090, 24 GB each;
-- 128 GB system RAM;
-- approximately 2 TB free disk;
-- Linux / CUDA / Ampere.
-
-For the announced 2.4T scale, weight storage dominates:
-
-| Representation | Approximate raw weight size |
-|---|---:|
-| BF16 / FP16 source | 4.8 TB |
-| FP8 source | 2.4 TB |
-| Symmetric INT4 weights only | 1.2 TB |
-| GPTQ INT4, group 128, scales + metadata | about 1.26 TB |
-| GPTQ INT4, group 64, scales + metadata | about 1.30 TB |
-
-Those estimates exclude the Hugging Face cache, output staging, disk offload,
-temporary checkpoints, tokenizer/processor assets, KV cache, activations, and
-validation artifacts. A BF16 source plus INT4 output cannot fit on a 2 TB
-volume. The current GPTQ-Pro runtime also has no validated multi-node,
-expert-streaming execution path for a model at this scale.
-
-**Conclusion:** do not start a full Qwen3.8-Max quantization on this workstation.
-Use the hosted preview, wait for a smaller official checkpoint, or move the job
-to a distributed system with multi-terabyte fast storage and model-aware expert
-parallelism.
-
-Run the built-in calculation:
+## Install
 
 ```bash
-python scripts/plan_qwen38_gptqpro.py \
-  --assume-qwen38-max \
-  --gpu-count 3 \
-  --gpu-vram-gb 24 \
-  --ram-gb 128 \
-  --disk-free-gb 2000
+git clone https://github.com/groxaxo/GPTQ-Pro.git
+cd GPTQ-Pro
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -e .
 ```
 
-## Best recipe for a future workstation-sized Qwen3.8 checkpoint
+The repository now requires `transformers>=5.8.0`, matching the processor and
+configuration generation used by the official Qwen3.8 checkpoint.
 
-The recommendation below targets a future dense or MoE checkpoint up to roughly
-70B total parameters, after its exact architecture has been registered and
-tested.
+## Preflight the official source
 
-### Quality-demon profile
-
-| Setting | Value | Why |
-|---|---|---|
-| Preset | `QuantizeConfig.max_quality_4bit()` | Enables the strongest named 4-bit recipe, including GPTAQ error feedback |
-| Bits | `4` | Required by the GPTQ-Pro runtime |
-| Group size | `64` | Better local scale resolution than 128; modest metadata cost |
-| Symmetric | `True` | Required by the local runtime |
-| `desc_act` | `False` | Act-order checkpoints are not executable by GPTQ-Pro |
-| Calibration | 128 samples × 1,024 tokens | Strong coverage without turning calibration into a long-context benchmark |
-| Batch size | `1` | Lowest-risk calibration path on 24 GB cards |
-| Placement | one visible GPU first | Avoids accidental expert-layer replication |
-| Offload | disk enabled | Keeps completed modules out of VRAM |
-| Trial boundary | first 2 decoder layers | Validates routing, memory, and save semantics before a full run |
-
-For a larger 70B–250B checkpoint, begin with `quality_4bit()`, group 128,
-96 samples × 1,024 tokens. Only switch to `max_quality_4bit()` or group 64 after
-a layer-subset A/B test proves that the quality gain justifies the extra
-quantization time and output size.
-
-Generate the plan for a hypothetical 27B checkpoint:
+This downloads configuration metadata, not the 55 GB BF16 weights:
 
 ```bash
-python scripts/plan_qwen38_gptqpro.py \
+python scripts/quant_qwen3_8_27b_gptqpro.py \
   --model Qwen/Qwen3.8-27B \
-  --total-params 27B \
-  --source-dtype bf16
+  --preflight-only
 ```
 
-The model identifier above is an example, not a claim that such a checkpoint is
-published.
+The preflight checks:
 
-## Calibration corpus
+1. installed Transformers version;
+2. canonical `qwen3_5` / `qwen3_5_text` routing;
+3. the exact 64-layer hybrid schedule and published dimensions;
+4. one MTP layer;
+5. absence of `auto_map` / remote code;
+6. expected 400 quantizable decoder linears;
+7. routing to `Qwen3_5QModel`.
 
-Calibration should look like the model's intended production workload. For a
-coding/agent checkpoint, a strong 128-sample mix is:
+## Inspect the W8A16 + MTP reference
 
-| Share | Material |
-|---:|---|
-| 30% | real code, diffs, stack traces, shell sessions, and debugging |
-| 20% | tool calls, strict JSON, schemas, and structured outputs |
-| 15% | multi-step reasoning and planning |
-| 15% | English/Spanish multilingual dialogue and technical prose |
-| 10% | retrieval-style documents, tables, and summarization |
-| 10% | adversarial formatting, long identifiers, numbers, and edge cases |
+The published reference checkpoint is:
 
-Deduplicate near-identical samples, preserve the real chat template, and truncate
-after tokenization rather than cutting raw characters.
+```text
+lued/Qwen3.8-27B-INT8-W8A16-MTP
+```
 
-A multimodal checkpoint requires processor-aware image/video/document
-calibration. Text-only calibration is not a valid substitute for validating the
-vision pathway.
+Inspect its architecture without loading weights:
 
-## What stays in source precision
+```bash
+python scripts/quant_qwen3_8_27b_gptqpro.py \
+  --model lued/Qwen3.8-27B-INT8-W8A16-MTP \
+  --preflight-only
+```
 
-Do not blindly quantize every linear-looking tensor. Preserve:
+That checkpoint is already `compressed-tensors` W8A16. It is useful as the
+first deployment/fidelity candidate, but it is **not** a valid input to
+GPTQ-Pro quantization and is not executable by GPTQ-Pro's 4-bit-only runtime.
+Use its native vLLM runtime. Re-quantize the official BF16 source only when the
+W8A16 candidate fails the required fidelity, memory, or throughput gates.
 
+Recommended two-RTX-3090 text-only deployment at 204,800 tokens:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 vllm serve \
+  lued/Qwen3.8-27B-INT8-W8A16-MTP \
+  --tensor-parallel-size 2 \
+  --quantization compressed-tensors \
+  --language-model-only \
+  --max-model-len 204800 \
+  --gpu-memory-utilization 0.93 \
+  --kv-cache-dtype fp8_e4m3 \
+  --calculate-kv-scales \
+  --enable-prefix-caching \
+  --enable-chunked-prefill \
+  --reasoning-parser qwen3 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --disable-custom-all-reduce \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+```
+
+## GPTQ-Pro quality recipe
+
+Use the official unquantized source:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+python scripts/quant_qwen3_8_27b_gptqpro.py \
+  --model Qwen/Qwen3.8-27B \
+  --out /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64 \
+  --calib text \
+  --calibration-jsonl /data/qwen38-calibration.jsonl \
+  --nsample 128 \
+  --group-size 64 \
+  --preset max_quality \
+  --offload-disk
+```
+
+Calibration JSONL format:
+
+```json
+{"text":"A representative coding, agent, tool-use, multilingual, or long-document sample."}
+```
+
+For a faster baseline, replace `max_quality` with `quality` and use 64 samples.
+Always run a two-layer smoke test before the complete model:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+python scripts/quant_qwen3_8_27b_gptqpro.py \
+  --model Qwen/Qwen3.8-27B \
+  --out /models/qwen38-two-layer-smoke \
+  --calib text \
+  --calibration-jsonl /data/qwen38-calibration.jsonl \
+  --nsample 4 \
+  --layers 2 \
+  --group-size 64 \
+  --preset quality
+```
+
+A full successful run writes `qwen3_8_27b_preflight.json` and must report:
+
+```json
+{
+  "definition": "Qwen3_5QModel",
+  "expected_quantized_modules": 400,
+  "packed_modules": 400,
+  "mtp_num_hidden_layers": 1,
+  "underlying_model_type": "qwen3_5"
+}
+```
+
+## Precision boundaries
+
+GPTQ-Pro quantizes:
+
+- full-attention `q_proj`, `k_proj`, `v_proj`, and `o_proj`;
+- Gated DeltaNet `in_proj_qkv`, `in_proj_z`, and `out_proj`;
+- MLP `gate_proj`, `up_proj`, and `down_proj`.
+
+The following remain in source precision:
+
+- Q/K norms and all layer norms;
+- Gated DeltaNet `in_proj_a`, `in_proj_b`, convolution, recurrent state, and norm;
+- vision tower and multimodal projector;
+- router-like gates that are not MLP `gate_proj` weights;
 - token embeddings and `lm_head`;
-- router gates and `shared_expert_gate`;
-- layer norms, RMS norms, and Q/K norms;
-- linear-attention convolution and recurrent-state helpers;
-- vision tower, patch embedding, projector, and merger modules;
-- `mtp.*`, `nextn.*`, and other auxiliary prediction heads;
-- the measured worst 0.5–1.0% of linear modules from a module-error scan.
+- all `mtp.*` tensors.
 
-`gate_proj` is an MLP projection and normally **should be quantized**. Do not
-use a broad `.*gate.*` skip expression that accidentally excludes it.
+Do not use a broad `.*gate.*` exclusion: it would incorrectly preserve the
+quantizable MLP `gate_proj` matrices.
 
-## Release-day integration checklist
+## Validation gate
 
-When official weights appear:
+Architecture support does not by itself prove a newly generated INT4 artifact
+is production-ready. Before publishing or deleting the BF16 source:
 
-1. Record the exact repository revision and license.
-2. Inspect `config.json`, `model_type`, `architectures`, nested `text_config`,
-   modality, expert count, active expert count, attention layout, MTP tensors,
-   and safetensor index.
-3. Update Transformers to the first version containing the official architecture.
-4. Add a dedicated GPTQ-Pro definition only after mapping the real forward order.
-5. Explicitly exclude routers, norms, recurrent helpers, vision modules, and
-   auxiliary heads.
-6. Add CPU architecture invariants and a synthetic tiny-config test.
-7. Load with `trust_remote_code=False` when official Transformers support exists.
-8. Run a `--dry-run`, then a two-layer quantization, then save/reload parity.
-9. Compare source vs INT4 deterministic generations and task metrics.
-10. Run the native RTX 3090 kernel validator and check in raw benchmark JSON.
+1. confirm the report contains 400 packed modules;
+2. compare source and output safetensor indexes, including every `mtp.*` tensor;
+3. verify no vision, norm, recurrent-helper, embedding, or LM-head tensor was packed;
+4. run deterministic source-vs-candidate generations on fixed prompts;
+5. measure held-out perplexity/KL and task quality on the intended workload;
+6. test image input unless the deployment is explicitly text-only;
+7. run the RTX 3090 numerical kernel validator;
+8. record peak VRAM, disk use, prefill speed, decode speed, MTP acceptance, and package revisions.
 
-Never map a new `model_type` to an older Qwen class merely because names look
-similar. Qwen 3.6 reused Qwen 3.5 classes, but Qwen 3.8 must be verified from the
-actual released configuration.
+For the existing W8A16 candidate, keep weight fidelity and serving fidelity as
+separate gates. Use BF16 KV for teacher-forced weight comparisons; use FP8 E4M3
+KV only for the final 204,800-token deployment benchmark.
 
-## Production gate
+## Primary implementation references
 
-A Qwen3.8 checkpoint should be called supported only after all of the following
-pass:
-
-- exact model-definition routing;
-- complete tensor preservation, including out-of-model tensors;
-- representative calibration;
-- source-vs-quantized quality checks;
-- deterministic generation parity on fixed prompts;
-- multimodal parity when applicable;
-- native kernel numerical validation;
-- measured VRAM, throughput, and disk usage;
-- documented package, CUDA, driver, and checkpoint revisions.
-
-Until then, use the phrase **Qwen 3.8 readiness**, not **Qwen 3.8 optimized**.
+- [Qwen/Qwen3.8-27B model repository](https://huggingface.co/Qwen/Qwen3.8-27B)
+- [vLLM Qwen3.8-27B recipe](https://github.com/vllm-project/recipes/blob/main/models/Qwen/Qwen3.8-27B.yaml)
+- [NVIDIA NeMo AutoModel Qwen3.8 guide](https://github.com/NVIDIA-NeMo/Automodel/blob/main/docs/guides/vlm/qwen3-8.mdx)
+- [SGLang Qwen3.8-27B configuration](https://github.com/sgl-project/sglang/blob/main/docs/src/snippets/configs/Qwen/qwen3.8-27b.jsx)

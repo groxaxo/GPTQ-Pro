@@ -15,13 +15,14 @@ from ._qwen3_5_vision import Qwen3_5VisionMixin
 
 
 class Qwen3_5QModel(Qwen3_5VisionMixin, LlamaQModel):
-    """Multimodal dense Qwen3.5/Qwen3.6 quantization definition.
+    """Multimodal dense Qwen3.5/Qwen3.6/Qwen3.8 quantization definition.
 
-    Official 27B checkpoints use the top-level :class:`Qwen3_5Config` wrapper
-    and place the hybrid text decoder under ``model.language_model``. The
-    shared vision mixin materializes the vision tower for multimodal
-    calibration while keeping it out of the quantization tree and in source
-    precision.
+    Official dense 27B checkpoints use the top-level :class:`Qwen3_5Config`
+    wrapper and place the hybrid text decoder under ``model.language_model``.
+    Qwen3.8-27B intentionally retains this exact architecture and routes through
+    this definition rather than a synthetic ``qwen3_8`` alias. The shared vision
+    mixin materializes the vision tower for multimodal calibration while keeping
+    it out of the quantization tree and in source precision.
     """
 
     config_class = Qwen3_5Config
@@ -29,8 +30,8 @@ class Qwen3_5QModel(Qwen3_5VisionMixin, LlamaQModel):
     require_load_processor = True
     modality = [MODALITY.TEXT, MODALITY.IMAGE_TO_TEXT]
 
-    # Transformers' Qwen3.5 SDPA path currently errors when calibration batches
-    # contain multiple padded samples, so quantization must stay single-sample.
+    # Transformers' Qwen3.5-family SDPA path currently errors when calibration
+    # batches contain multiple padded samples, so quantization stays single-sample.
     support_batch_quantize = False
 
     layer_modules_strict = False
@@ -39,9 +40,9 @@ class Qwen3_5QModel(Qwen3_5VisionMixin, LlamaQModel):
 
     rotary_embedding = "model.language_model.rotary_emb"
 
-    # Qwen3.5 and Qwen3.6 dense checkpoints may store MTP/draft-head tensors
-    # outside the instantiated Transformers model. Preserve every mtp.* tensor
-    # verbatim when writing the quantized checkpoint instead of silently
+    # Qwen3.5, Qwen3.6, and Qwen3.8 dense checkpoints may store MTP/draft-head
+    # tensors outside the instantiated Transformers model. Preserve every mtp.*
+    # tensor verbatim when writing the quantized checkpoint instead of silently
     # dropping the auxiliary prediction head.
     out_of_model_tensors = {"prefixes": ["mtp"]}
 
