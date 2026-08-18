@@ -133,11 +133,12 @@ $WORKDIR/
 Do not delete `WORKDIR` until the assembled artifact has passed validation.
 A `.done.json` marker is written only after the corresponding chunk completed,
 was moved out of its temporary directory, and its calibration/config identity
-was recorded.
+was recorded. SIGTERM/SIGINT are forwarded to the active quantizer; an
+interrupted `.tmp` chunk is deliberately discarded and repeated on the next run.
 
 ### Manual range execution
 
-The shared dense driver now supports arbitrary decoder ranges:
+The shared dense driver supports arbitrary decoder ranges:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2 \
@@ -157,6 +158,103 @@ python scripts/quant_qwen3_8_27b_gptqpro.py \
 
 `--layers N` remains as a backwards-compatible shorthand for quantizing layers
 `[0, N)`. It cannot be combined with `--layer-start` or `--layer-count`.
+
+## Nightly 00:00-07:00 autonomous schedule
+
+For a workstation that should quantize only overnight, install the supplied
+user-level systemd timer:
+
+```bash
+bash scripts/install_qwen38_nightly_systemd.sh
+```
+
+The installer creates:
+
+```text
+~/.config/gptq-pro/qwen38-nightly.env
+~/.config/systemd/user/gptq-pro-qwen38-nightly.service
+~/.config/systemd/user/gptq-pro-qwen38-nightly.timer
+```
+
+Edit `qwen38-nightly.env` if the model, calibration corpus, work directory, or
+final output paths differ. The timer fires at **00:00 local time every day**.
+`qwen38_nightly_runner.sh` calculates the actual local wall-clock interval to
+07:00 and exits outside that window, so a `Persistent=true` catch-up invocation
+cannot accidentally run during the day. This also follows daylight-saving time
+through the host's configured timezone.
+
+At the deadline, `timeout` first sends SIGTERM and gives the quantizer a grace
+period. The systemd service additionally uses `KillMode=control-group`,
+`TimeoutStopSec=3min`, and `RuntimeMaxSec=7h` as defense in depth. Only completed
+four-layer chunks have markers, so the next midnight skips good chunks and
+repeats only the chunk that was active at 07:00.
+
+For autonomous operation while the user is logged out, systemd user lingering
+must be enabled once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+The installer enables it automatically when passwordless sudo is available and
+otherwise prints this command.
+
+Useful controls:
+
+```bash
+systemctl --user status gptq-pro-qwen38-nightly.timer
+systemctl --user start gptq-pro-qwen38-nightly.service
+journalctl --user -u gptq-pro-qwen38-nightly.service -f
+systemctl --user disable --now gptq-pro-qwen38-nightly.timer
+```
+
+A manual service start still obeys the 00:00-07:00 window. Once quantization and
+the post-build benchmark have completed, the runner finds
+`$WORKDIR/state/benchmark.done.json` and future midnight invocations become
+no-ops.
+
+## Post-quantization benchmark
+
+The nightly runner automatically benchmarks the assembled artifact. If
+quantization finishes too close to 07:00, benchmarking is deferred to the next
+midnight rather than extending into the daytime window.
+
+The default benchmark uses one visible GPU and contexts of 2K, 8K, and 32K:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+python scripts/benchmark_qwen38_gptqpro.py \
+  --model /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64-longctx \
+  --contexts 2048,8192,32768 \
+  --new-tokens 128 \
+  --output /models/qwen38-gptq-pro-benchmark.json
+```
+
+For a deliberate 64K stress test:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+python scripts/benchmark_qwen38_gptqpro.py \
+  --model /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64-longctx \
+  --contexts 2048,8192,32768,65536 \
+  --new-tokens 128 \
+  --output /models/qwen38-gptq-pro-benchmark-64k.json
+```
+
+The JSON report records:
+
+- model load time and exact software/GPU environment;
+- peak allocated and reserved VRAM per context case;
+- first-token generation latency as a practical TTFT proxy;
+- end-to-end generated-token throughput;
+- approximate steady decode tokens/s after subtracting the TTFT proxy;
+- per-context failures such as CUDA OOM without losing the rest of the report;
+- deterministic coding, CUDA-diagnostics, JSON, and Spanish quality-smoke outputs.
+
+The TTFT and decode numbers are intentionally labelled proxies: they are based
+on `generate()` timing rather than a server scheduler's internal prefill/decode
+instrumentation. They are suitable for repeatable local A/B comparisons between
+GPTQ-Pro artifacts on the same host.
 
 ## Assembly
 
