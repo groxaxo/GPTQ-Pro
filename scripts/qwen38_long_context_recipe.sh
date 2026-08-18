@@ -3,19 +3,10 @@ set -euo pipefail
 
 # Resumable long-context max-quality GPTQ-Pro recipe for Qwen3.8-27B.
 #
-# Strategy:
-# - quantize in deterministic four-layer chunks matching the model's repeating
-#   3x linear-attention + 1x full-attention schedule;
-# - save every chunk as an independent checkpoint artifact;
-# - mark successful chunks atomically so interrupted runs restart from the last
-#   completed boundary rather than from layer zero;
-# - use the same fixed calibration JSONL and max-quality g64 settings for every
-#   chunk;
-# - finish with an explicit assembly step handled by
-#   assemble_qwen38_resumable.py, which refuses missing or incompatible chunks.
-#
-# This is crash-resumable at four-layer boundaries. A process killed while a
-# chunk is in progress reruns only that chunk.
+# Four-layer chunks match the repeating 3x linear-attention + 1x full-attention
+# schedule. Only a fully saved chunk receives an atomic completion marker. A
+# SIGTERM/SIGINT therefore loses at most the active chunk; the next invocation
+# removes its temporary directory and retries that chunk from the beginning.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -32,6 +23,18 @@ TOTAL_LAYERS=64
 
 mkdir -p "$WORKDIR/chunks" "$WORKDIR/logs" "$WORKDIR/state"
 
+active_pid=""
+stop_requested=0
+
+request_stop() {
+  stop_requested=1
+  echo "[stop] graceful stop requested; incomplete chunk will be retried" >&2
+  if [[ -n "$active_pid" ]] && kill -0 "$active_pid" 2>/dev/null; then
+    kill -TERM "$active_pid" 2>/dev/null || true
+  fi
+}
+trap request_stop TERM INT
+
 if [[ ! -s "$CALIBRATION_JSONL" ]]; then
   echo "Calibration JSONL missing or empty: $CALIBRATION_JSONL" >&2
   exit 2
@@ -47,6 +50,10 @@ python scripts/quant_qwen3_8_27b_gptqpro.py \
   --preflight-only
 
 for ((start=0; start<TOTAL_LAYERS; start+=CHUNK_LAYERS)); do
+  if (( stop_requested )); then
+    exit 75
+  fi
+
   end=$((start + CHUNK_LAYERS))
   tag=$(printf "%02d-%02d" "$start" "$((end - 1))")
   out="$WORKDIR/chunks/layers-$tag"
@@ -58,10 +65,13 @@ for ((start=0; start<TOTAL_LAYERS; start+=CHUNK_LAYERS)); do
     continue
   fi
 
+  # A prior stop/crash may leave only this temporary artifact. Never trust or
+  # continue it: rerun the four-layer chunk, then atomically promote it.
   rm -rf "$out.tmp"
   mkdir -p "$out.tmp"
 
   echo "[run] quantizing layers $start..$((end - 1))"
+  set +e
   CUDA_VISIBLE_DEVICES="$GPU_LIST" \
   python scripts/quant_qwen3_8_27b_gptqpro.py \
     --model "$MODEL" \
@@ -75,7 +85,21 @@ for ((start=0; start<TOTAL_LAYERS; start+=CHUNK_LAYERS)); do
     --preset max_quality \
     --calib-device cuda:0 \
     --offload-disk \
-    2>&1 | tee "$log"
+    > >(tee "$log") 2>&1 &
+  active_pid=$!
+  wait "$active_pid"
+  rc=$?
+  active_pid=""
+  set -e
+
+  if (( stop_requested )); then
+    echo "[stop] layers $tag interrupted; no completion marker written" >&2
+    exit 75
+  fi
+  if (( rc != 0 )); then
+    echo "[error] quantizer failed for layers $tag with exit code $rc" >&2
+    exit "$rc"
+  fi
 
   rm -rf "$out"
   mv "$out.tmp" "$out"
@@ -120,6 +144,10 @@ finally:
 PY
 
 done
+
+if (( stop_requested )); then
+  exit 75
+fi
 
 python scripts/assemble_qwen38_resumable.py \
   --source "$MODEL" \
