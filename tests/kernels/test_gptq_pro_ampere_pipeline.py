@@ -140,6 +140,21 @@ def test_ampere_path_caches_scales_and_accepts_eight_column_alignment():
     assert "(N % 8) == 0" in source
 
 
+def test_v4_promotes_group_scales_to_registers_without_reordering_mma():
+    source = (ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v4.cu").read_text(
+        encoding="utf-8"
+    )
+
+    assert '#include "gptq_pro_kernel_v3.cu"' in source
+    assert "load_scale_registers_v4" in source
+    assert "half scale_regs[GPTQ_PRO_J_TILES]" in source
+    assert "scale_regs[j] = smem_s[j * 8 + group_id]" in source
+    assert "starts_group = (tile % group_tiles) == 0" in source
+    assert "decode_bfrag_to_rb(packed_16, scale_regs[j], zero_point, RB)" in source
+    assert "mma_f32_m16n8k16(RA, RB, RC[j])" in source
+    assert "gptq_pro_gemm_v3_baseline" in source
+
+
 def test_runtime_uses_native_qweight_without_duplicate_buffer():
     qlinear = (ROOT / "gptqmodel/nn_modules/qlinear/gptq_pro.py").read_text(
         encoding="utf-8"
@@ -177,10 +192,10 @@ def test_validator_covers_optimized_n8_tails_and_scale_reuse():
     assert '"ampere-scale-reuse"' in validator
 
 
-def test_runtime_abi_is_versioned_for_kernel_v3():
+def test_runtime_abi_is_versioned_for_kernel_v4():
     runtime = (ROOT / "gptqmodel/utils/gptq_pro.py").read_text(encoding="utf-8")
-    assert '"gptqmodel_gptq_pro_kernels_v3"' in runtime
-    assert 'ext_dir / "gptq_pro_kernel_v3.cu"' in runtime
+    assert '"gptqmodel_gptq_pro_kernels_v4"' in runtime
+    assert 'ext_dir / "gptq_pro_kernel_v4.cu"' in runtime
 
 
 def test_cuda_compile_workflow_covers_ampere_targets():
