@@ -53,6 +53,7 @@ jobs:
             scripts/benchmark_gptq_pro_kernel.py \
             tests/kernels/test_gptq_pro_ampere_pipeline.py \
             tests/kernels/test_gptq_pro_v4_exact.py
+          ruff format --diff tests/kernels/test_gptq_pro_ampere_pipeline.py || true
           ruff format --check \
             gptqmodel/utils/gptq_pro.py \
             gptqmodel/nn_modules/qlinear/gptq_pro.py \
