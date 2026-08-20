@@ -158,8 +158,7 @@ def test_v4_promotes_group_scales_to_registers_without_reordering_mma():
     assert "v3_gptq_pro_gemm(" in v4_source
     assert (
         "GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, "
-        "gptq_pro_gemm_kernel_ampere)"
-        in v3_source
+        "gptq_pro_gemm_kernel_ampere)" in v3_source
     )
 
 
