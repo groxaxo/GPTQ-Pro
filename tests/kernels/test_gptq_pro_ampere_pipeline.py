@@ -193,10 +193,10 @@ def test_validator_covers_optimized_n8_tails_and_scale_reuse():
     assert '"ampere-scale-reuse"' in validator
 
 
-def test_runtime_abi_is_versioned_for_kernel_v4():
+def test_runtime_default_abi_is_v3_with_v4_retained_as_experiment():
     runtime = (ROOT / "gptqmodel/utils/gptq_pro.py").read_text(encoding="utf-8")
-    assert '"gptqmodel_gptq_pro_kernels_v4"' in runtime
-    assert 'ext_dir / "gptq_pro_kernel_v4.cu"' in runtime
+    assert '"gptqmodel_gptq_pro_kernels_v3"' in runtime
+    assert 'ext_dir / "gptq_pro_kernel_v3.cu"' in runtime
 
 
 def test_cuda_compile_workflow_covers_ampere_targets():

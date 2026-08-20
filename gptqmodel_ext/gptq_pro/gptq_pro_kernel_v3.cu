@@ -31,7 +31,7 @@
 #define GPTQ_PRO_JOIN_IMPL(a, b) a##b
 #define GPTQ_PRO_JOIN(a, b) GPTQ_PRO_JOIN_IMPL(a, b)
 #define gptq_pro_gemv_kernel GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_gemv_kernel)
-#define gptq_pro_gemm_kernel_ampere GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_kernel_ampere)
+#define gptq_pro_gemm_kernel_ampere GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_gemm_kernel_ampere)
 #define gptq_pro_gemm GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_gemm)
 #endif
 

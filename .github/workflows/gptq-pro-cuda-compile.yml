@@ -9,6 +9,7 @@ on:
       - "scripts/benchmark_gptq_pro_kernel.py"
       - "scripts/validate_gptq_pro_ampere.sh"
       - "tests/kernels/test_gptq_pro_ampere_pipeline.py"
+      - "tests/kernels/test_gptq_pro_v4_exact.py"
       - ".github/workflows/gptq-pro-cuda-compile.yml"
   push:
     branches:
@@ -22,6 +23,7 @@ on:
       - "scripts/benchmark_gptq_pro_kernel.py"
       - "scripts/validate_gptq_pro_ampere.sh"
       - "tests/kernels/test_gptq_pro_ampere_pipeline.py"
+      - "tests/kernels/test_gptq_pro_v4_exact.py"
       - ".github/workflows/gptq-pro-cuda-compile.yml"
   workflow_dispatch:
 
@@ -49,17 +51,20 @@ jobs:
             gptqmodel/utils/gptq_pro.py \
             gptqmodel/nn_modules/qlinear/gptq_pro.py \
             scripts/benchmark_gptq_pro_kernel.py \
-            tests/kernels/test_gptq_pro_ampere_pipeline.py
+            tests/kernels/test_gptq_pro_ampere_pipeline.py \
+            tests/kernels/test_gptq_pro_v4_exact.py
           ruff format --check \
             gptqmodel/utils/gptq_pro.py \
             gptqmodel/nn_modules/qlinear/gptq_pro.py \
             scripts/benchmark_gptq_pro_kernel.py \
-            tests/kernels/test_gptq_pro_ampere_pipeline.py
+            tests/kernels/test_gptq_pro_ampere_pipeline.py \
+            tests/kernels/test_gptq_pro_v4_exact.py
           python -m py_compile \
             gptqmodel/utils/gptq_pro.py \
             gptqmodel/nn_modules/qlinear/gptq_pro.py \
             scripts/benchmark_gptq_pro_kernel.py \
-            tests/kernels/test_gptq_pro_ampere_pipeline.py
+            tests/kernels/test_gptq_pro_ampere_pipeline.py \
+            tests/kernels/test_gptq_pro_v4_exact.py
 
   cuda-compile:
     runs-on: ubuntu-24.04
@@ -72,7 +77,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential
           rm -rf /var/lib/apt/lists/*
-      - name: Compile standalone validator for Ampere targets
+      - name: Compile standalone validators for Ampere targets
         working-directory: gptqmodel_ext/gptq_pro
         run: |
           nvcc -O3 -std=c++17 -lineinfo \
@@ -83,11 +88,21 @@ jobs:
             -gencode arch=compute_87,code=sm_87 \
             -gencode arch=compute_87,code=compute_87 \
             gptq_pro_validate.cu gptq_pro_kernel_v3.cu \
-            -o /tmp/gptq_pro_validate
+            -o /tmp/gptq_pro_validate_v3
+          nvcc -O3 -std=c++17 -lineinfo \
+            -U__CUDA_NO_HALF_OPERATORS__ \
+            -U__CUDA_NO_HALF_CONVERSIONS__ \
+            -gencode arch=compute_80,code=sm_80 \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_87,code=sm_87 \
+            -gencode arch=compute_87,code=compute_87 \
+            gptq_pro_validate.cu gptq_pro_kernel_v4.cu \
+            -o /tmp/gptq_pro_validate_v4
       - name: Record binary metadata
         run: |
-          test -x /tmp/gptq_pro_validate
-          ls -lh /tmp/gptq_pro_validate
+          test -x /tmp/gptq_pro_validate_v3
+          test -x /tmp/gptq_pro_validate_v4
+          ls -lh /tmp/gptq_pro_validate_v3 /tmp/gptq_pro_validate_v4
 
   pytorch-extension-compile:
     runs-on: ubuntu-24.04
@@ -117,32 +132,37 @@ jobs:
           from torch.utils.cpp_extension import load
 
           root = Path.cwd()
-          extension = load(
-              name="gptqmodel_gptq_pro_ci_v3",
-              sources=[
-                  str(root / "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp"),
-                  str(root / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu"),
-              ],
-              extra_cflags=["-O3", "-std=c++17"],
-              extra_cuda_cflags=[
-                  "-O3",
-                  "-std=c++17",
-                  "-lineinfo",
-                  "-U__CUDA_NO_HALF_OPERATORS__",
-                  "-U__CUDA_NO_HALF_CONVERSIONS__",
-                  "-gencode=arch=compute_80,code=sm_80",
-                  "-gencode=arch=compute_86,code=sm_86",
-                  "-gencode=arch=compute_87,code=sm_87",
-                  "-gencode=arch=compute_87,code=compute_87",
-              ],
-              build_directory="/tmp/gptq_pro_extension_ci",
-              verbose=True,
-          )
-          assert hasattr(extension, "gptq_pro_gemm")
-          print(extension.gptq_pro_gemm.__doc__)
+          for name, kernel in (
+              ("gptqmodel_gptq_pro_ci_v3", "gptq_pro_kernel_v3.cu"),
+              ("gptqmodel_gptq_pro_ci_v4", "gptq_pro_kernel_v4.cu"),
+          ):
+              extension = load(
+                  name=name,
+                  sources=[
+                      str(root / "gptqmodel_ext/gptq_pro/gptq_pro_torch.cpp"),
+                      str(root / "gptqmodel_ext/gptq_pro" / kernel),
+                  ],
+                  extra_cflags=["-O3", "-std=c++17"],
+                  extra_cuda_cflags=[
+                      "-O3",
+                      "-std=c++17",
+                      "-lineinfo",
+                      "-U__CUDA_NO_HALF_OPERATORS__",
+                      "-U__CUDA_NO_HALF_CONVERSIONS__",
+                      "-gencode=arch=compute_80,code=sm_80",
+                      "-gencode=arch=compute_86,code=sm_86",
+                      "-gencode=arch=compute_87,code=sm_87",
+                      "-gencode=arch=compute_87,code=compute_87",
+                  ],
+                  build_directory="/tmp/gptq_pro_extension_ci_" + name.split("_")[-1],
+                  verbose=True,
+              )
+              assert hasattr(extension, "gptq_pro_gemm")
+              print(extension.gptq_pro_gemm.__doc__)
           PY
       - name: Run CPU packing and dispatch contracts
         run: |
           /tmp/gptq-pro-ci/bin/python -m pytest -q \
             --confcutdir=tests/kernels \
-            tests/kernels/test_gptq_pro_ampere_pipeline.py
+            tests/kernels/test_gptq_pro_ampere_pipeline.py \
+            tests/kernels/test_gptq_pro_v4_exact.py
