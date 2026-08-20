@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 import torch
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 

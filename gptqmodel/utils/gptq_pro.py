@@ -9,7 +9,6 @@ import os
 import shutil
 import threading
 from pathlib import Path
-from typing import Optional
 
 import torch
 from torch.utils.cpp_extension import _get_build_directory, load
@@ -19,7 +18,6 @@ from .env import env_flag
 from .logger import setup_logger
 from .rocm import IS_ROCM
 
-
 log = setup_logger()
 
 _GPTQ_PRO_EXTENSION_NAME = "gptqmodel_gptq_pro_kernels_v3"
@@ -27,7 +25,7 @@ _GPTQ_PRO_LOCK = threading.Lock()
 _GPTQ_PRO_MODULE = None
 _GPTQ_PRO_INITIALISED = False
 _GPTQ_PRO_BUILD_PREPARED = False
-gptq_pro_import_exception: Optional[str] = None
+gptq_pro_import_exception: str | None = None
 
 _KERNEL_MODES = {"auto", "gemv", "ampere", "legacy"}
 
@@ -96,7 +94,7 @@ def _build_gptq_pro_extension(verbose: bool):
     )
 
 
-def ensure_gptq_pro_loaded(*, verbose: Optional[bool] = None):
+def ensure_gptq_pro_loaded(*, verbose: bool | None = None):
     global _GPTQ_PRO_MODULE, _GPTQ_PRO_INITIALISED, gptq_pro_import_exception
 
     if _GPTQ_PRO_MODULE is not None:
@@ -140,7 +138,7 @@ def ensure_gptq_pro_loaded(*, verbose: Optional[bool] = None):
             raise ImportError(gptq_pro_import_exception) from exc
 
 
-def normalize_gptq_pro_kernel_mode(kernel_mode: Optional[str] = None) -> str:
+def normalize_gptq_pro_kernel_mode(kernel_mode: str | None = None) -> str:
     if kernel_mode is None:
         kernel_mode = os.getenv("GPTQMODEL_GPTQ_PRO_KERNEL", "auto")
     normalized = str(kernel_mode).strip().lower()
@@ -177,7 +175,7 @@ def apply_gptq_pro_linear(
     qweight: torch.Tensor,
     scales: torch.Tensor,
     group_size: int,
-    kernel_mode: Optional[str] = None,
+    kernel_mode: str | None = None,
 ) -> torch.Tensor:
     module = ensure_gptq_pro_loaded()
     mode = normalize_gptq_pro_kernel_mode(kernel_mode)

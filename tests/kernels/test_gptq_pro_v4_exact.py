@@ -60,14 +60,10 @@ def test_v4_ampere_matches_v3_bits_when_both_extensions_are_available():
             + 0.001
         )
 
-        baseline = v3.gptq_pro_gemm(
-            activations, qweight, scales, group_size, "ampere"
-        )
-        candidate = v4.gptq_pro_gemm(
-            activations, qweight, scales, group_size, "ampere"
-        )
+        baseline = v3.gptq_pro_gemm(activations, qweight, scales, group_size, "ampere")
+        candidate = v4.gptq_pro_gemm(activations, qweight, scales, group_size, "ampere")
         torch.cuda.synchronize(device)
 
-        assert torch.equal(
-            baseline.view(torch.uint16), candidate.view(torch.uint16)
-        ), f"V4 changed FP16 output bits for M={m}, N={n}, K={k}, group={group_size}"
+        assert torch.equal(baseline.view(torch.uint16), candidate.view(torch.uint16)), (
+            f"V4 changed FP16 output bits for M={m}, N={n}, K={k}, group={group_size}"
+        )

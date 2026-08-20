@@ -126,7 +126,7 @@ jobs:
           /tmp/gptq-pro-ci/bin/python -m pip install pytest
       - name: Compile and import PyTorch extension
         run: |
-          mkdir -p /tmp/gptq_pro_extension_ci
+          mkdir -p /tmp/gptq_pro_extension_ci_v3 /tmp/gptq_pro_extension_ci_v4
           /tmp/gptq-pro-ci/bin/python - <<'PY'
           from pathlib import Path
           from torch.utils.cpp_extension import load
