@@ -14,13 +14,18 @@
  *   - FP16 round-to-nearest output conversion.
  */
 
-#define gptq_pro_gemv_kernel gptq_pro_gemv_kernel_v3_baseline
-#define gptq_pro_gemm_kernel_ampere gptq_pro_gemm_kernel_ampere_v3_baseline
-#define gptq_pro_gemm gptq_pro_gemm_v3_baseline
+// Overlay V3 under renamed symbols so its validated GEMV path and fragment
+// helpers remain the exact behavioral baseline inside this translation unit.
+// The prefix macro makes V3 rename its own externally-linkable definitions
+// (and its V2-baseline dispatch) instead of leaving them under literal names,
+// which previously collided with the V4 definitions below.
+#define GPTQ_PRO_JOIN_IMPL(a, b) a##b
+#define GPTQ_PRO_JOIN(a, b) GPTQ_PRO_JOIN_IMPL(a, b)
+#define GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX v3_
 #include "gptq_pro_kernel_v3.cu"
-#undef gptq_pro_gemv_kernel
-#undef gptq_pro_gemm_kernel_ampere
-#undef gptq_pro_gemm
+#undef GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX
+#undef GPTQ_PRO_JOIN
+#undef GPTQ_PRO_JOIN_IMPL
 
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 
@@ -212,7 +217,7 @@ cudaError_t gptq_pro_gemm(
         if (!gemv_compatible) {
             return cudaErrorInvalidValue;
         }
-        return gptq_pro_gemm_v3_baseline(
+        return v3_gptq_pro_gemm(
             A, Q, S, C, M, N, K, group_size, stream, GPTQ_PRO_KERNEL_GEMV);
     }
 
@@ -231,6 +236,6 @@ cudaError_t gptq_pro_gemm(
         return cudaGetLastError();
     }
 
-    return gptq_pro_gemm_v3_baseline(
+    return v3_gptq_pro_gemm(
         A, Q, S, C, M, N, K, group_size, stream, selected_mode);
 }

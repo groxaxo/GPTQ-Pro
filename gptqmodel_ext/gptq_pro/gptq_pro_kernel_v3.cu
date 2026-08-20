@@ -10,6 +10,8 @@
  *   - optimized Tensor Core dispatch for every runtime-valid N % 8 shape.
  */
 
+// V2 baseline include — identical symbol renames in standalone and overlay
+// mode: V2's kernels stay addressable under their *_v2_baseline names.
 #define gptq_pro_gemv_kernel gptq_pro_gemv_kernel_v2_baseline
 #define gptq_pro_gemm_kernel_ampere gptq_pro_gemm_kernel_ampere_v2_baseline
 #define gptq_pro_gemm_kernel_legacy gptq_pro_gemm_kernel_legacy_v2
@@ -19,6 +21,19 @@
 #undef gptq_pro_gemm_kernel_ampere
 #undef gptq_pro_gemm_kernel_legacy
 #undef gptq_pro_gemm
+
+// Overlay mode (V4+): from here to the bottom of this file, V3's own
+// externally-linkable definitions are renamed with the caller's prefix so an
+// overlay generation can include this unit as its behavioral baseline and
+// still export the unrenamed symbols itself. The legacy dispatch above is
+// deliberately NOT renamed: it targets V2's kernel by its *_v2 name.
+#if defined(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX)
+#define GPTQ_PRO_JOIN_IMPL(a, b) a##b
+#define GPTQ_PRO_JOIN(a, b) GPTQ_PRO_JOIN_IMPL(a, b)
+#define gptq_pro_gemv_kernel GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_gemv_kernel)
+#define gptq_pro_gemm_kernel_ampere GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_kernel_ampere)
+#define gptq_pro_gemm GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, gptq_pro_gemm)
+#endif
 
 static constexpr int GPTQ_PRO_GEMV_SPLIT_K = GPTQ_PRO_WARPS_PER_CTA;
 static constexpr int GPTQ_PRO_GEMV_N_PER_CTA = GPTQ_PRO_WARP_SIZE;
@@ -381,3 +396,11 @@ cudaError_t gptq_pro_gemm(
         A, Q, S, C, M, N, K, group_size);
     return cudaGetLastError();
 }
+
+#if defined(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX)
+#undef gptq_pro_gemv_kernel
+#undef gptq_pro_gemm_kernel_ampere
+#undef gptq_pro_gemm
+#undef GPTQ_PRO_JOIN
+#undef GPTQ_PRO_JOIN_IMPL
+#endif

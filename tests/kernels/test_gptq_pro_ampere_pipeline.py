@@ -146,13 +146,14 @@ def test_v4_promotes_group_scales_to_registers_without_reordering_mma():
     )
 
     assert '#include "gptq_pro_kernel_v3.cu"' in source
+    assert "GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX" in source
     assert "load_scale_registers_v4" in source
     assert "half scale_regs[GPTQ_PRO_J_TILES]" in source
     assert "scale_regs[j] = smem_s[j * 8 + group_id]" in source
     assert "starts_group = (tile % group_tiles) == 0" in source
     assert "decode_bfrag_to_rb(packed_16, scale_regs[j], zero_point, RB)" in source
     assert "mma_f32_m16n8k16(RA, RB, RC[j])" in source
-    assert "gptq_pro_gemm_v3_baseline" in source
+    assert "v3_gptq_pro_gemm(" in source
 
 
 def test_runtime_uses_native_qweight_without_duplicate_buffer():
