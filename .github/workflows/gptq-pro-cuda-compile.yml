@@ -124,18 +124,21 @@ jobs:
             --index-url https://download.pytorch.org/whl/cu126 \
             torch==2.8.0
           /tmp/gptq-pro-ci/bin/python -m pip install pytest
-      - name: Compile and import PyTorch extension
+      - name: Compile and stage V3/V4 PyTorch extension ABIs
         run: |
           mkdir -p /tmp/gptq_pro_extension_ci_v3 /tmp/gptq_pro_extension_ci_v4
           /tmp/gptq-pro-ci/bin/python - <<'PY'
           from pathlib import Path
+          from shutil import copy2
+
           from torch.utils.cpp_extension import load
 
           root = Path.cwd()
           for name, kernel in (
-              ("gptqmodel_gptq_pro_ci_v3", "gptq_pro_kernel_v3.cu"),
-              ("gptqmodel_gptq_pro_ci_v4", "gptq_pro_kernel_v4.cu"),
+              ("gptqmodel_gptq_pro_kernels_v3", "gptq_pro_kernel_v3.cu"),
+              ("gptqmodel_gptq_pro_kernels_v4", "gptq_pro_kernel_v4.cu"),
           ):
+              generation = name.rsplit("_", 1)[-1]
               extension = load(
                   name=name,
                   sources=[
@@ -154,14 +157,25 @@ jobs:
                       "-gencode=arch=compute_87,code=sm_87",
                       "-gencode=arch=compute_87,code=compute_87",
                   ],
-                  build_directory="/tmp/gptq_pro_extension_ci_" + name.split("_")[-1],
+                  build_directory=f"/tmp/gptq_pro_extension_ci_{generation}",
                   verbose=True,
               )
               assert hasattr(extension, "gptq_pro_gemm")
+              staged = root / Path(extension.__file__).name
+              copy2(extension.__file__, staged)
+              assert staged.is_file()
               print(extension.gptq_pro_gemm.__doc__)
+              print(f"Staged: {staged}")
           PY
-      - name: Run CPU packing and dispatch contracts
+      - name: Run source contracts and GPU exactness when available
         run: |
+          if /tmp/gptq-pro-ci/bin/python - <<'PY'
+          import torch
+          raise SystemExit(0 if torch.cuda.is_available() else 1)
+          PY
+          then
+            export GPTQ_PRO_REQUIRE_V4_EXACT=1
+          fi
           /tmp/gptq-pro-ci/bin/python -m pytest -q \
             --confcutdir=tests/kernels \
             tests/kernels/test_gptq_pro_ampere_pipeline.py \

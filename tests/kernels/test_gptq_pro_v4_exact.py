@@ -6,27 +6,39 @@ import pytest
 import torch
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_v4_ampere_matches_v3_bits_when_both_extensions_are_available():
-    """Require bitwise FP16 equality for the first V4 data-movement change.
+_REQUIRE_V4_EXACT = os.getenv("GPTQ_PRO_REQUIRE_V4_EXACT") == "1"
 
-    The test intentionally skips when a checkout has not built both extension
-    ABIs. On an Ampere validation host, build/import V3 first, then V4, and this
-    becomes the strict quality gate for the register-resident scale change.
+
+def _skip_or_fail(reason: str) -> None:
+    """Skip ordinary test collection, but fail an explicit validation gate."""
+    if _REQUIRE_V4_EXACT:
+        pytest.fail(reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def test_v4_ampere_matches_v3_bits_when_both_extensions_are_available():
+    """Require bitwise FP16 equality for the V4 data-movement experiment.
+
+    Ordinary CPU-only test runs skip this hardware gate. Physical Ampere
+    validation must set GPTQ_PRO_REQUIRE_V4_EXACT=1 so missing CUDA support or
+    either prebuilt extension ABI is a hard failure rather than a silent skip.
     """
-    if torch.cuda.get_device_capability()[0] < 8:
-        pytest.skip("Ampere-or-newer GPU required")
+    if not torch.cuda.is_available():
+        _skip_or_fail("CUDA required")
+
+    device = torch.device("cuda", int(os.getenv("GPTQ_PRO_TEST_GPU", "0")))
+    torch.cuda.set_device(device)
+    if torch.cuda.get_device_capability(device)[0] < 8:
+        _skip_or_fail("Ampere-or-newer GPU required")
 
     try:
         from gptqmodel.utils._extension_loader import load_extension_module
 
         v3 = load_extension_module("gptqmodel_gptq_pro_kernels_v3")
         v4 = load_extension_module("gptqmodel_gptq_pro_kernels_v4")
-    except ImportError:
-        pytest.skip("Both GPTQ-Pro V3 and V4 extensions must be prebuilt")
+    except ImportError as exc:
+        _skip_or_fail(f"Both GPTQ-Pro V3 and V4 extensions must be prebuilt: {exc}")
 
-    device = torch.device("cuda", int(os.getenv("GPTQ_PRO_TEST_GPU", "0")))
-    torch.cuda.set_device(device)
     generator = torch.Generator(device=device).manual_seed(0x47505451)
 
     shapes = (

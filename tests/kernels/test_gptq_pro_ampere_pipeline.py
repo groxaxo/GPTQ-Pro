@@ -140,19 +140,36 @@ def test_ampere_path_caches_scales_and_accepts_eight_column_alignment():
 
 
 def test_v4_promotes_group_scales_to_registers_without_reordering_mma():
-    source = (ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v4.cu").read_text(
+    v3_source = (
+        ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu"
+    ).read_text(encoding="utf-8")
+    v4_source = (
+        ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v4.cu"
+    ).read_text(encoding="utf-8")
+
+    assert '#include "gptq_pro_kernel_v3.cu"' in v4_source
+    assert "GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX" in v4_source
+    assert "load_scale_registers_v4" in v4_source
+    assert "half scale_regs[GPTQ_PRO_J_TILES]" in v4_source
+    assert "scale_regs[j] = smem_s[j * 8 + group_id]" in v4_source
+    assert "starts_group = (tile % group_tiles) == 0" in v4_source
+    assert "decode_bfrag_to_rb(packed_16, scale_regs[j], zero_point, RB)" in v4_source
+    assert "mma_f32_m16n8k16(RA, RB, RC[j])" in v4_source
+    assert "v3_gptq_pro_gemm(" in v4_source
+    assert (
+        "GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, "
+        "gptq_pro_gemm_kernel_ampere)"
+    ) in v3_source
+
+
+def test_v4_exactness_gate_can_be_made_mandatory():
+    exact_test = (ROOT / "tests/kernels/test_gptq_pro_v4_exact.py").read_text(
         encoding="utf-8"
     )
 
-    assert '#include "gptq_pro_kernel_v3.cu"' in source
-    assert "GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX" in source
-    assert "load_scale_registers_v4" in source
-    assert "half scale_regs[GPTQ_PRO_J_TILES]" in source
-    assert "scale_regs[j] = smem_s[j * 8 + group_id]" in source
-    assert "starts_group = (tile % group_tiles) == 0" in source
-    assert "decode_bfrag_to_rb(packed_16, scale_regs[j], zero_point, RB)" in source
-    assert "mma_f32_m16n8k16(RA, RB, RC[j])" in source
-    assert "v3_gptq_pro_gemm(" in source
+    assert 'os.getenv("GPTQ_PRO_REQUIRE_V4_EXACT") == "1"' in exact_test
+    assert "pytest.fail(reason, pytrace=False)" in exact_test
+    assert "Both GPTQ-Pro V3 and V4 extensions must be prebuilt" in exact_test
 
 
 def test_runtime_uses_native_qweight_without_duplicate_buffer():
@@ -206,4 +223,10 @@ def test_cuda_compile_workflow_covers_ampere_targets():
     for architecture in ("sm_80", "sm_86", "sm_87"):
         assert architecture in workflow
     assert "gptq_pro_validate.cu gptq_pro_kernel_v3.cu" in workflow
+    assert "gptq_pro_validate.cu gptq_pro_kernel_v4.cu" in workflow
+    assert '"gptqmodel_gptq_pro_kernels_v3"' in workflow
+    assert '"gptqmodel_gptq_pro_kernels_v4"' in workflow
+    assert "copy2(extension.__file__" in workflow
+    assert "GPTQ_PRO_REQUIRE_V4_EXACT=1" in workflow
+    assert "tests/kernels/test_gptq_pro_v4_exact.py" in workflow
     assert "gptq_pro_torch.cpp" in workflow
