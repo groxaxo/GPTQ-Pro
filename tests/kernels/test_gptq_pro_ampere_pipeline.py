@@ -140,12 +140,12 @@ def test_ampere_path_caches_scales_and_accepts_eight_column_alignment():
 
 
 def test_v4_promotes_group_scales_to_registers_without_reordering_mma():
-    v3_source = (
-        ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu"
-    ).read_text(encoding="utf-8")
-    v4_source = (
-        ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v4.cu"
-    ).read_text(encoding="utf-8")
+    v3_source = (ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu").read_text(
+        encoding="utf-8"
+    )
+    v4_source = (ROOT / "gptqmodel_ext/gptq_pro/gptq_pro_kernel_v4.cu").read_text(
+        encoding="utf-8"
+    )
 
     assert '#include "gptq_pro_kernel_v3.cu"' in v4_source
     assert "GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX" in v4_source
@@ -159,7 +159,8 @@ def test_v4_promotes_group_scales_to_registers_without_reordering_mma():
     assert (
         "GPTQ_PRO_JOIN(GPTQ_PRO_V3_KERNEL_ALIAS_PREFIX, "
         "gptq_pro_gemm_kernel_ampere)"
-    ) in v3_source
+        in v3_source
+    )
 
 
 def test_v4_exactness_gate_can_be_made_mandatory():
