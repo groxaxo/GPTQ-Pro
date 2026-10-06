@@ -2033,6 +2033,7 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
             "act_group_aware": "act_group_aware",
             "true_sequential": "true_sequential",
             "static_groups": "static_groups",
+            "strict_numerics": "strict_numerics",
             "damp_percent": "damp_percent",
             "damp_auto_increment": "damp_auto_increment",
             "opt_rotation_epochs": "opt_rotation_epochs",
@@ -2117,7 +2118,7 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
     def to_dict(self):
         smooth = _serialize_smooth_method(self.fallback.smooth if self.fallback is not None else None)
 
-        meta_payload = dict(self.meta) if self.meta else {}
+        meta_payload = copy.deepcopy(self.meta) if self.meta else {}
         if self.moe:
             meta_payload["moe"] = self.moe.to_dict()
 
@@ -2156,7 +2157,12 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
 
         out = {
             "bits": serialize_quant_bits(self.bits),
-            "dynamic": self.dynamic,
+            # Export inspection must not erase live adapter directives or copy
+            # their weights. Detach only the non-adapter configuration values.
+            "dynamic": {
+                pattern: {key: copy.deepcopy(value) for key, value in rule.items() if key != "adapter"}
+                for pattern, rule in self.dynamic.items()
+            } if self.dynamic is not None else None,
             "group_size": self.group_size,
             "desc_act": self.desc_act,
             "lm_head": self.lm_head,
@@ -2278,6 +2284,7 @@ class GPTQConfig(PreProcessorConfig):
         metadata={"help": "Skip heavy computations for fast model loading validation"},
     )
     hessian: Optional[HessianConfig] = field(default_factory=HessianConfig)
+    strict_numerics: bool = field(default=False)
 
     def allowed_quant_methods(self) -> Tuple[METHOD, ...]:
         return (METHOD.GPTQ,)
@@ -2302,6 +2309,8 @@ class GPTQConfig(PreProcessorConfig):
         if self.damp_auto_increment < 0:
             raise ValueError("QuantizeConfig:: `damp_auto_increment` must greater than 0.")
 
+        if not isinstance(self.strict_numerics, bool):
+            raise ValueError("QuantizeConfig: `strict_numerics` must be a bool.")
         self.hessian = _normalize_hessian(self.hessian)
         self.gptaq = _normalize_gptaq(self.gptaq)
         self.foem = _normalize_foem(self.foem)
@@ -2314,6 +2323,27 @@ class GPTQConfig(PreProcessorConfig):
         self._resolve_activation_ordering(desc_act_user_value, act_group_aware_user_value)
         if self.act_group_aware and self.desc_act:
             raise ValueError("QuantizeConfig:: `act_group_aware` == `True` requires `desc_act` == `False`.")
+
+    def effective_recipe(self) -> Dict[str, Any]:
+        """Report implemented solver features, not merely inherited preset flags.
+
+        Mirrors GPTQProcessor.preprocess selection order. This is evidence, not
+        a promise that unsupported features will be silently emulated.
+        """
+        solver = "gptaq" if self.gptaq is not None else "foem" if self.foem is not None else "gptq"
+        requested = {
+            "act_group_aware": bool(self.act_group_aware),
+            "activation_weighted_mse": bool(self.activation_weighted_mse),
+        }
+        effective = {key: value and solver == "gptq" for key, value in requested.items()}
+        effective["activation_weighted_mse"] &= self.mse > 0
+        return {
+            "solver": solver, "requested": requested, "effective": effective,
+            "ignored_features": [key for key in requested if requested[key] and not effective[key]],
+            "nsamples_unit": "activation_rows" if solver == "gptq" else "batch_items",
+            "shadowed_configs": ["foem"] if self.gptaq is not None and self.foem is not None else [],
+            "strict_numerics": self.strict_numerics,
+        }
 
     def _resolve_activation_ordering(
         self,
@@ -2362,6 +2392,7 @@ class GPTQConfig(PreProcessorConfig):
         meta_payload["damp_percent"] = self.damp_percent
         meta_payload["damp_auto_increment"] = self.damp_auto_increment
         meta_payload["static_groups"] = self.static_groups
+        meta_payload["strict_numerics"] = self.strict_numerics
         meta_payload["true_sequential"] = self.true_sequential
         meta_payload["mse"] = self.mse
         meta_payload["activation_weighted_mse"] = self.activation_weighted_mse

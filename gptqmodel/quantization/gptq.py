@@ -205,6 +205,7 @@ class GPTQ:
 
         self.H = None
         self.nsamples = 0
+        self.observed_activation_rows = 0
 
         self.quantizer = self.create_quantizer(name=self.name)
 
@@ -266,6 +267,59 @@ class GPTQ:
         # Return identity matrix instead of complex inversion
         identity = torch.eye(H.shape[0], dtype=torch.float32, device=H.device)
         return identity, damp
+
+    def _check_finite(self, tensor: torch.Tensor, stage: str) -> None:
+        """Strict, bounded-workspace scan; do not flatten/copy noncontiguous H."""
+        if not self.qcfg.strict_numerics:
+            return
+        if tensor.ndim == 0:
+            valid = torch.isfinite(tensor)
+        else:
+            row_elements = tensor.numel() // max(1, tensor.shape[0])
+            rows = max(1, (1 << 20) // max(1, row_elements))
+            valid = torch.ones((), dtype=torch.bool, device=tensor.device)
+            for chunk in tensor.split(rows, dim=0):
+                valid.logical_and_(torch.isfinite(chunk).all())
+        if not bool(valid.item()):
+            raise FloatingPointError(
+                f"Quantization: Module `{self.name}` -> nonfinite {stage}; strict_numerics forbids repair."
+            )
+
+    def _validate_native_pair(self, inp: torch.Tensor) -> None:
+        """Check before consuming native inputs; never permit silent broadcast."""
+        if not self.qcfg.strict_numerics:
+            return
+        if not self.native_inps:
+            raise FloatingPointError(f"Quantization: Module `{self.name}` -> missing native feedback input.")
+        native = self.native_inps[0]
+        if native.shape != inp.shape:
+            raise FloatingPointError(f"Quantization: Module `{self.name}` -> native feedback shape mismatch.")
+        self._check_finite(native, "native feedback input")
+
+    def _validate_quantization_start(self) -> None:
+        if not self.qcfg.strict_numerics:
+            return
+        if self.qcfg.mock_quantization:
+            raise FloatingPointError(f"Quantization: Module `{self.name}` -> strict_numerics forbids mock quantization.")
+        if self.nsamples <= 0:
+            raise FloatingPointError(f"Quantization: Module `{self.name}` -> no calibration coverage for strict solve.")
+        source_weight = self.module_copy if self.module_copy is not None else self.module.weight
+        self._check_finite(source_weight, "source weights")
+        if self.H is not None:
+            self._check_finite(self.H, "Hessian statistics")
+        feedback = getattr(self, "dXXT", None)
+        if feedback is not None:
+            self._check_finite(feedback, "feedback statistics")
+
+    def _check_loss(self, loss: float) -> None:
+        if self.qcfg.strict_numerics and not math.isfinite(loss):
+            raise FloatingPointError(f"Quantization: Module `{self.name}` -> nonfinite solver loss.")
+
+    def _validate_result(self, weight, scale, zero) -> None:
+        if not self.qcfg.strict_numerics:
+            return
+        for tensor, stage in ((weight, "quantized weights"), (scale, "quantized scales"), (zero, "quantized zeros")):
+            self._check_finite(tensor, stage)
 
     def log_cpu_fallback(self, stage: str, source_device: torch.device) -> None:
         """Apply the CUDA OOM policy before a memory-heavy step moves to CPU.
@@ -343,6 +397,7 @@ class GPTQ:
 
             self._device_sample_counts[dev] = self._device_sample_counts.get(dev, 0) + batch_token_size
             self.nsamples += batch_token_size
+            self.observed_activation_rows += batch_token_size
             self._hessian_dirty = True
 
     def preferred_staging_dtype(self, input_dtype: torch.dtype, device: torch.device) -> torch.dtype:
@@ -481,6 +536,7 @@ class GPTQ:
     def process_batch(self, inp: torch.Tensor) -> Tuple[int, Optional[torch.Tensor], torch.device]:
         # print(f"inp = {inp}")
         # print(f"self.module = {self.module} device = {self.module.target_device}")
+        self._check_finite(inp, "calibration input")
         inp_device = get_device(inp)
 
         #inp = inp.to(device=self.module.target_device, dtype=torch.float32)
@@ -558,6 +614,7 @@ class GPTQ:
             xtx = xtx.detach()
             del reshaped_inp
 
+        self._check_finite(xtx, "Hessian accumulation")
         self._snapshot_borrow_workspace_stats(context="process_batch")
         return batch_token_size, xtx, canonical_device
 
@@ -782,10 +839,12 @@ class GPTQ:
         Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
         mean_abs_err = (Q - self.module.weight.data).abs().mean().item()
         duration = time.time() - start_time
+        self._check_loss(mean_abs_err)
         avg_loss = f"fallback({strategy.value}): {mean_abs_err:.7f}"
         damp = 0.0
 
         self.H = None
+        self._validate_result(Q, scale, zero)
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
     # FIXME, optimum needs fasterquant, we need to remove it
@@ -825,6 +884,7 @@ class GPTQ:
 
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
+        self._check_finite(H, "Hessian factorization input")
         # Capture a writable view of the Hessian diagonal so we can restore it between attempts.
         diag_view = H.diagonal()
         orig_diag = diag_view.clone()
@@ -868,7 +928,11 @@ class GPTQ:
                 try:
                     diag_view.add_(damp * mean)
                     H2 = torch.linalg.cholesky(H)
-                    Hinv_result = torch.linalg.cholesky(torch.cholesky_inverse(H2), upper=True)
+                    self._check_finite(H2, "Hessian factorization intermediate")
+                    inverse = torch.cholesky_inverse(H2)
+                    self._check_finite(inverse, "Hessian inverse intermediate")
+                    Hinv_result = torch.linalg.cholesky(inverse, upper=True)
+                    del inverse
                     diag_view.copy_(current_diag)
                     del H2
                     used_damp = damp
@@ -877,8 +941,9 @@ class GPTQ:
                             f"Quantization: Module `{self.name}` -> Damp recovery succeeded at `damp_percent={damp:.5f}` "
                             f"(started at {recovery_initial_damp:.5f})."
                         )
+                    self._check_finite(Hinv_result, "Hessian factorization output")
                     return Hinv_result, used_damp
-                except (torch._C._LinAlgError, RuntimeError) as e:
+                except torch.linalg.LinAlgError as e:
                     last_error = e
                     diag_view.copy_(current_diag)
                     if self.qcfg.damp_auto_increment != 0:
@@ -895,6 +960,11 @@ class GPTQ:
                         log.warn(
                             f"Quantization: Module `{self.name}` -> Hessian Cholesky failed with `damp_percent={damp:.5f}` and no auto increment configured.")
                         break
+                except (RuntimeError, FloatingPointError):
+                    # CUDA OOM and unrelated kernel failures are not conditioning
+                    # failures. Restore before the outer OOM policy sees them.
+                    diag_view.copy_(current_diag)
+                    raise
 
             if damp_recovery_started:
                 final_damp = recovery_last_damp if recovery_last_damp is not None else damp
@@ -908,6 +978,10 @@ class GPTQ:
             f"Quantization: Module `{self.name}` -> Hessian remained non positive-definite after diagonal floor attempts. Last `damp_percent` tried = {damp:.5f}.")
         if last_error is not None:
             log.debug(f"Hessian failure detail: {last_error}")
+        if self.qcfg.strict_numerics:
+            raise FloatingPointError(
+                f"Quantization: Module `{self.name}` -> Hessian factorization failed after bounded recovery."
+            ) from last_error
         return None, 1.0
 
     @torch.inference_mode()
@@ -918,6 +992,7 @@ class GPTQ:
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
         start = time.time()
+        self._validate_quantization_start()
 
         target_device = getattr(self.module, "target_device", None)
         result_device = torch.device(self.module.weight.data.device)
@@ -977,6 +1052,7 @@ class GPTQ:
         activation_importance = None
         if use_hessian:
             # Replace NaN/Inf in H before processing (can occur with some model architectures)
+            self._check_finite(self.H, "Hessian statistics before sanitization")
             self.H.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
             dead = torch.diag(self.H) == 0
             self.H[dead, dead] = 1
@@ -1269,6 +1345,7 @@ class GPTQ:
             del Hinv
             if self.nsamples != 0:
                 avg_loss = torch.sum(Losses).item() / self.nsamples
+                self._check_loss(avg_loss)
 
                 if math.isnan(avg_loss):
                     print("Losses sum item:", torch.sum(Losses).item())
@@ -1353,6 +1430,7 @@ class GPTQ:
 
         duration = time.time() - start
 
+        self._validate_result(Q, scale, zero)
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
     def borrow_materialized_chunk_stats(self, reset: bool = False) -> Dict[str, int]:

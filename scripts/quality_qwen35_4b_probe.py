@@ -117,6 +117,7 @@ def main() -> int:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--expected-commit", help="Reject a changed worktree before a queued GPU test")
     args = parser.parse_args()
     source = args.source.resolve(strict=True)
     output = args.output.resolve()
@@ -137,8 +138,12 @@ def main() -> int:
         report["source"] = source_manifest(source)
         report["git_commit"] = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        diff = subprocess.check_output(["git", "diff", "--binary"], cwd=ROOT)
+        diff = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=ROOT)
         report["tracked_diff_sha256"] = hashlib.sha256(diff).hexdigest()
+        if args.expected_commit:
+            status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)
+            if report["git_commit"] != args.expected_commit or diff or status.strip():
+                raise RuntimeError("Queued probe source does not match its expected clean commit")
         report["probe_sha256"] = digest_file(Path(__file__))
         if args.preflight_only:
             report["status"] = "preflight_passed"
@@ -220,11 +225,15 @@ def main() -> int:
         index = json.loads((source / "model.safetensors.index.json").read_text())["weight_map"]
         cfg = QuantizeConfig.quality_4bit(
             group_size=64, fallback=None, offload_to_disk=False,
+            strict_numerics=True,
             damp_percent=0.025, damp_auto_increment=0.005,
             hessian=HessianConfig(staging_dtype="float32", cuda_oom_policy="error"),
         )
         restored = QuantizeConfig.from_quant_config(json.loads(json.dumps(cfg.to_dict())))
         report["recipe"] = cfg.to_dict()
+        report["effective_recipe"] = cfg.effective_recipe()
+        legacy = QuantizeConfig.from_quant_config(json.loads(json.dumps(cfg.to_dict())))
+        legacy.strict_numerics = False
         with torch.inference_mode(), tf32_high_precision_guard():
             for name in SELECTED:
                 with safe_open(source / index[name], framework="pt", device="cpu") as f:
@@ -234,7 +243,7 @@ def main() -> int:
                 record = {"name": name, "shape": list(source_weight.shape),
                           "source_tensor_sha256": tensor_hash(source_weight), "runs": []}
                 reference = None
-                for label, qcfg in (("direct", cfg), ("json_roundtrip", restored)):
+                for label, qcfg in (("legacy", legacy), ("strict", cfg), ("strict_json_roundtrip", restored)):
                     dense = torch.nn.Linear(source_weight.shape[1], source_weight.shape[0],
                                             bias=False, dtype=torch.bfloat16, device=device)
                     dense.weight.copy_(source_weight.to(device))
@@ -273,6 +282,7 @@ def main() -> int:
                     del solver, dense, quant, scale, zero, g_idx, baseline, candidate, values
                     gc.collect()
                 record["roundtrip_tensor_exact"] = True
+                record["strict_legacy_tensor_exact"] = True
                 report["modules"].append(record)
                 del x, heldout, source_weight, reference
                 save()

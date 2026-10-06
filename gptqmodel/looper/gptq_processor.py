@@ -45,6 +45,9 @@ def clone_gptq_config_for_module(
 
     # dynamic overrides
     if qcfg.dynamic is not None:
+        qcfg_clone.strict_numerics = qcfg.dynamic_get(module_full_name, "strict_numerics", qcfg_clone.strict_numerics)
+        if not isinstance(qcfg_clone.strict_numerics, bool):
+            raise ValueError("QuantizeConfig: dynamic `strict_numerics` must be a bool.")
         qcfg_clone.bits = qcfg.dynamic_get(module_full_name, "bits", qcfg_clone.bits)
         qcfg_clone.sym = qcfg.dynamic_get(module_full_name, "sym", qcfg_clone.sym)
         qcfg_clone.mse = qcfg.dynamic_get(module_full_name, "mse", qcfg_clone.mse)
@@ -316,6 +319,12 @@ class GPTQProcessor(LoopProcessor):
         # Keep recovery evidence after the solver task is freed. These fields
         # are serialized with the existing per-module quantization log.
         cpu_events = getattr(g, "cpu_fallback_events", ())
+        effective = g.qcfg.effective_recipe()
+        stat["solver"] = effective["solver"]
+        stat["ignored_recipe_features"] = ", ".join(effective["ignored_features"])
+        stat["nsamples_unit"] = effective["nsamples_unit"]
+        stat["observed_activation_rows"] = str(g.observed_activation_rows)
+        stat["strict_numerics"] = str(g.qcfg.strict_numerics)
         stat["cuda_oom_policy"] = g.qcfg.hessian.cuda_oom_policy
         stat["cpu_fallback_count"] = str(len(cpu_events))
         stat["cpu_fallback_stages"] = "; ".join(event["stage"] for event in cpu_events)
