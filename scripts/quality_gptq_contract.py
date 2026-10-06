@@ -70,7 +70,7 @@ def cpu_audit(manifest, output_parent):
     return results
 
 
-def cuda_audit(cases, report, save):
+def cuda_audit(cases, report, save, *, extension_file=None, extension_sha256=None):
     if not cases:
         raise ValueError('An empty CUDA case list cannot certify a kernel')
     import torch
@@ -84,13 +84,20 @@ def cuda_audit(cases, report, save):
         raise RuntimeError('The live contract gate requires sm_86')
     # Import prebuilt only. Do not use ensure_gptq_pro_loaded(), which may remove
     # a cache directory and JIT compile if the extension is unavailable.
-    extension=load_extension_module('gptqmodel_gptq_pro_kernels_v3')
-    if not hasattr(extension,'gptq_pro_gemm'):
-        raise ImportError('Prebuilt V3 extension lacks gptq_pro_gemm')
     from gptqmodel.utils.gptq_pro_manifest import sha256_file
-    extension_path=Path(extension.__file__).resolve(strict=True)
-    report['prebuilt_extension']={'path':str(extension_path),'sha256':sha256_file(extension_path),
-                                  'source_build_identity_proven':False}
+    if (extension_file is None) != (extension_sha256 is None):
+        raise ValueError('extension_file and extension_sha256 must be supplied together')
+    if extension_file is not None:
+        from gptqmodel.utils.gptq_pro_prebuilt import load_pinned_v3
+        extension, identity = load_pinned_v3(extension_file, extension_sha256)
+    else:
+        extension=load_extension_module('gptqmodel_gptq_pro_kernels_v3')
+        if not callable(getattr(extension,'gptq_pro_gemm',None)):
+            raise ImportError('Prebuilt V3 extension lacks gptq_pro_gemm')
+        extension_path=Path(extension.__file__).resolve(strict=True)
+        identity={'path':str(extension_path),'sha256':sha256_file(extension_path),
+                  'sha256_pin_verified':False,'source_build_identity_proven':False}
+    report['prebuilt_extension']=identity
     report['kernel_source_sha256']={str(path.relative_to(ROOT)):sha256_file(path)
         for path in sorted((ROOT/'gptqmodel_ext/gptq_pro').iterdir())
         if path.suffix in ('.cu','.cuh','.cpp')}
@@ -139,7 +146,13 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--mode',choices=['manifest','cpu','cuda'],default='manifest')
     parser.add_argument('--expected-commit')
+    parser.add_argument('--extension-file',type=Path)
+    parser.add_argument('--extension-sha256')
     args=parser.parse_args()
+    if (args.extension_file is None) != (args.extension_sha256 is None):
+        parser.error('--extension-file and --extension-sha256 must be supplied together')
+    if args.extension_file is not None and args.mode != 'cuda':
+        parser.error('Explicit extension selection is only valid for CUDA mode')
     source=args.source.resolve(strict=True)
     output=args.output.resolve()
     if output.exists() or output.is_relative_to(source):
@@ -172,7 +185,7 @@ def main():
         report['provenance']={'commit':head,'tracked_diff_sha256':hashlib.sha256(diff).hexdigest(),
                               'implementation_sha256':{str(path.relative_to(ROOT)):sha256_file(path) for path in (
                                 Path(__file__),ROOT/'gptqmodel/utils/gptq_pro_contract.py',
-                                ROOT/'gptqmodel/utils/gptq_pro_manifest.py')},
+                                ROOT/'gptqmodel/utils/gptq_pro_manifest.py',ROOT/'gptqmodel/utils/gptq_pro_prebuilt.py')},
                               'torch':torch.__version__}
         manifest=inspect_qwen35_4b(source)
         report['manifest']=manifest
@@ -187,7 +200,7 @@ def main():
         if args.mode=='cpu':
             report['real_weight_audits']=cpu_audit(manifest,output.parent)
         elif args.mode=='cuda':
-            cuda_audit(cases,report,save)
+            cuda_audit(cases,report,save,extension_file=args.extension_file,extension_sha256=args.extension_sha256)
         report['status']='passed'
         report['completed_unix']=time.time()
         save()
