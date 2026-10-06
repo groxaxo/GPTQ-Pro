@@ -6,6 +6,11 @@ Original: `/home/op/src/GPTQ-Pro-int8-20261002` (dirty; preserve unchanged).
 Branch: `fix/quality-foundation-20261007`.
 Worktree: `/home/op/src/GPTQ-Pro-quality-20261007`.
 Model tests: **Qwen/Qwen3.5-4B**, local original-precision checkpoint only.
+Local source located during implementation:
+`/home/op/dream-qwen4b-guarded.3ZPNcF/model/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`.
+Its config has 32 decoder layers (24 linear-attention, 8 full-attention), hidden
+2560, intermediate 9216, and the index contains 15 MTP tensors. MTP runtime and
+vision are not certified by the initial text/linear smoke.
 
 ## 0. Safety and scope
 
@@ -136,6 +141,51 @@ No benchmark answers in calibration. Text tests do not certify vision quality.
 Compare nested 64k/128k/256k/512k token budgets with enough independent documents.
 Keep domain/length composition matched. Long-context ablation is separate: one 32k
 sequence is not equivalent to sixteen 2k sequences even with the same token count.
+
+## 3A. Source-audited feedback feature gate — required before ranking recipes
+
+The October 7 source inspection found an important correction to the original
+plan: GPTAQ and FOEM override both accumulation and quantize(), rather than
+extending the base GPTQ solve with every base quality lever intact.
+
+| Effective behavior in this checkout | Base GPTQ | GPTAQ | FOEM |
+|---|---|---|---|
+| GAR / act_group_aware | Implemented | Not consumed | Not consumed |
+| Activation-weighted MSE importance | Passed to quantizer | Not passed | Not passed |
+| Ordinary MSE clip search | Available | Available | Available |
+| nsamples denominator | Activation rows | Batch items before flatten | Batch items before flatten |
+| Chunked/per-device Hessian accumulation | Implemented | Separate legacy path | Separate legacy path |
+| Emergency CPU recovery | Four guarded locations | OOM propagates | OOM propagates |
+
+`GPTQProcessor.preprocess()` chooses GPTAQ when gptaq is non-null, before looking
+at foem. Setting both configs is therefore NOT FOEM+GPTAQ. The FOEM implementation
+represents its combined method with FOEMConfig(alpha>0, beta>0) and gptaq=None.
+The configuration round-trip fix preserves inputs; it does not silently change
+this existing selection order.
+
+Consequences for the search:
+- A0-A4 measure practical recipe packages, not a clean GPTAQ-only causal effect.
+- Add a matched control with GAR off and activation weighting off when isolating
+  GPTAQ/FOEM. Still verify normalization and feedback equations before interpreting
+  solver loss differences; nsamples/avg_loss are not cross-algorithm comparable.
+- Report requested and effective features. Do not assume a serialized boolean
+  means that the selected solver executes that feature.
+- Port weighting/GAR only as a separately tested algorithm patch. Permute H,
+  dXXT, weights, group identities and output restoration consistently. Test alpha
+  zero, beta zero, variable lengths and no feedback before real-model evaluation.
+  The legacy source explicitly warns that an earlier accumulation port hurt
+  GPTAQ quality; do not repeat it as a supposedly math-neutral refactor.
+
+Additional numerical debt: base GPTQ sanitizes nonfinite H using nan_to_num_.
+Quality certification must detect and report nonfinite source activations/Hessian
+before that sanitization. The initial cuda_oom_policy patch is NOT a complete
+strict-numerics policy and does not change that behavior. A distinct opt-in
+nonfinite policy and factorization-failure gate need tests before promotion.
+
+The existing whole-suite gate also needs repair: some inherited tests import
+removed AWQ/FailSafe APIs; one model-test helper requires missing tabulate. These
+failures reproduce on the untouched base. Keep them visible; do not restore
+unsupported backends or delete tests merely to obtain a green summary.
 
 ## 4. Controlled uniform search — Qwen3.5-4B first
 
@@ -273,7 +323,10 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 "$PY" -m pytest -q \
   tests/qcfg/test_gptq_pro.py tests/test_quality_config_integrity.py \
   tests/test_hessian_oom_policy.py
 
-# Only when implemented and validated; no physical GPU override inside the job.
+# Implemented bounded smoke: real BF16 source forward, actual activations,
+# two isolated linear solves, and exact direct-vs-JSON-restored tensor parity.
+# It is NOT a full-model quantization, MTP test, or live serving-kernel gate.
+# No physical GPU override inside the queue job.
 /home/op/.local/bin/gpuq submit --name gptq-pro-quality-qwen35-4b \
   --cwd "$PWD" --count 1 --candidates 1,2 -- \
   "$PY" scripts/quality_qwen35_4b_probe.py \
@@ -291,3 +344,17 @@ not claims of implemented APIs. Track implemented entrypoints in the work report
 - https://huggingface.co/Qwen/Qwen3.5-4B
 - Local source at cdbe16d is authoritative for fork behavior; upstream capability
   claims do not prove support in this checkout.
+
+## Implementation discovery: nondefault solver serialization
+
+The source also omitted damp_percent, damp_auto_increment, static_groups and
+true_sequential from exported metadata. Four new regression cases reproduced
+reversion to defaults. The foundation patch now writes/reads all four, and the
+4B probe uses nondefault damping .025 and increment .005 to verify the tuned
+configuration, not merely a default configuration, survives JSON round-trip.
+
+Further serialization audit remains: BaseQuantizeConfig.to_dict currently uses
+a reference to self.dynamic before stripping adapter fields; mutation-free
+dynamic serialization and preprocessor/rotation provenance need their own
+regression cases before heterogeneous recipe promotion. This initial patch
+does not claim to repair every serializer field or implement mixed formats.

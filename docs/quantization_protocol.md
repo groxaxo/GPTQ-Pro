@@ -1,5 +1,13 @@
 # Quantization Protocol
 
+> **Implementation status:** this document includes proposed interfaces, not
+> a promise that every example can execute. The current compiler accepts one
+> stage, one rule, and a weight target. Multiple stages/rules, actions, aliases,
+> and input/output/KV-cache targets raise `NotImplementedError`.
+> Use `QuantizeConfig.dynamic` for existing per-module overrides, then verify
+> packing, save/reload and backend support. Mixed layouts are not automatically
+> portable. See [the quality implementation plan](QUALITY_IMPLEMENTATION_PLAN.md).
+
 ## Overview
 
 This document proposes a next-generation quantization configuration protocol for `gptqmodel`.

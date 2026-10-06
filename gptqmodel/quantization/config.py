@@ -663,7 +663,12 @@ class TensorParallelPadderConfig(BasePreProcessorConfig):
 
 @dataclass
 class HessianConfig:
-    """Controls for chunked Hessian accumulation during GPTQ calibration."""
+    """Controls for Hessian staging and emergency CUDA-to-CPU fallback.
+
+    ``cuda_oom_policy="error"`` makes quality experiments fail closed instead of
+    silently changing numerical backend. Intentional CPU quantization is allowed.
+    The legacy default ``"cpu"`` retains automatic recovery for existing users.
+    """
 
     # Hessian accumulation controls (GPTQ only)
     chunk_size: Optional[int] = field(default=None, metadata={"help": "Maximum rows per Hessian chunk"})
@@ -672,9 +677,14 @@ class HessianConfig:
         default=torch.float32,
         metadata={"help": "Stage Hessian chunks in a lower precision dtype when supported"},
     )
+    # Append new options to preserve the legacy positional constructor order.
+    cuda_oom_policy: str = field(default="cpu")
 
     def __post_init__(self):
-        """Validate Hessian chunking and staging dtype settings."""
+        """Validate Hessian chunking, staging dtype, and CUDA OOM policy."""
+
+        if not isinstance(self.cuda_oom_policy, str) or self.cuda_oom_policy not in ("cpu", "error"):
+            raise ValueError("HessianConfig: `cuda_oom_policy` must be 'cpu' or 'error'.")
 
         if self.chunk_size is not None:
             if not isinstance(self.chunk_size, int):
@@ -1819,11 +1829,14 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         """
         Build a speed-preserving GPTQ quality profile.
 
-        The returned config keeps the standard GPTQ output format so existing
-        GPTQ/Marlin/ExLlama/VLLM kernels continue to run unchanged, while
-        enabling offline-only quality improvements already implemented in
-        GPTQModel such as GAR (`act_group_aware`), MSE scale search, and
-        adaptive damping for badly conditioned Hessian blocks.
+        The recipe uses GPTQ-compatible serialization and enables offline GAR
+        (`act_group_aware`), MSE scale search, and adaptive damping. Runtime
+        compatibility must be verified for the selected backend, bits, groups,
+        and dtype; mixed dynamic layouts are not universally portable.
+
+        Explicit ``fallback=None`` and ``gptaq=None`` disable preset defaults.
+        For fail-closed CUDA quality runs, pass a HessianConfig with
+        ``cuda_oom_policy="error"``.
         """
         if "quant_method" in kwargs and kwargs["quant_method"] != METHOD.GPTQ:
             raise ValueError("QuantizeConfig.gptq_pro() only supports `quant_method=METHOD.GPTQ`.")
@@ -1833,22 +1846,26 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         if "format" in kwargs and kwargs["format"] not in QUANT_METHOD_FORMAT_MAPPING[METHOD.GPTQ]:
             raise ValueError("QuantizeConfig.gptq_pro() only supports GPTQ-compatible output formats.")
 
-        fallback = kwargs.pop("fallback", None)
-        if fallback is None and "failsafe" in kwargs:
-            fallback = kwargs.pop("failsafe")
-        if fallback is None:
+        # Presence matters: explicit fallback=None disables this preset's
+        # default. The canonical spelling wins over the legacy failsafe alias.
+        if "fallback" in kwargs:
+            fallback = kwargs.pop("fallback")
+        elif failsafe is not None:
             fallback = failsafe
-
-        if failsafe is None:
+        else:
             fallback = Fallback(
                 strategy=FallbackStrategy.RTN,
                 threshold="0.5%",
                 smooth=SmoothMSE(steps=32, maxshrink=0.9),
             )
 
-        gptaq = kwargs.pop("gptaq", None)
-        if gptaq is None and gptaq_alpha is not None:
-            gptaq = GPTAQConfig(alpha=gptaq_alpha, device=gptaq_device)
+        if "gptaq" in kwargs:
+            gptaq = kwargs.pop("gptaq")
+        else:
+            gptaq = (
+                GPTAQConfig(alpha=gptaq_alpha, device=gptaq_device)
+                if gptaq_alpha is not None else None
+            )
 
         defaults = {
             "bits": bits,
@@ -1880,12 +1897,13 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
     ) -> "QuantizeConfig":
         """Build a maximum-quality GPTQ profile (offline-only, standard GPTQ output).
 
-        Extends :meth:`gptq_pro` -- which already enables GAR (`act_group_aware`),
-        MSE scale search, activation-weighted MSE, adaptive damping, and failsafe
-        smoothing -- by additionally turning on GPTAQ activation-aware error
-        feedback (a.k.a. GPTQv2) by default. Every gain is quantization-time only;
-        the emitted checkpoint stays in standard GPTQ format, so existing
-        GPTQ/Marlin/ExLlama/vLLM kernels run unchanged.
+        Starts with :meth:`gptq_pro` configuration values, then selects the
+        separate GPTAQ (GPTQv2) solver by default. In this checkout that solver
+        does not consume GAR or activation-weighted MSE importance, even though
+        their config flags are inherited. This is therefore a recipe candidate,
+        not a strict superset of the base solver's effective quality features.
+        GPTQ serialization does not establish compatibility with every runtime
+        or dynamic layout. See docs/QUALITY_IMPLEMENTATION_PLAN.md for coverage.
 
         For very low bit-widths (2-3 bit), the dominant additional quality lever is
         Hadamard incoherence processing: pass ``rotation="hadamard"``. Note that in
@@ -1902,7 +1920,7 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
     # --- Named quality presets -------------------------------------------------
     # IMPORTANT: these are *quantization-recipe* presets. They are independent of
     # the runtime inference kernel, which is selected separately at load time
-    # (Marlin by default on Ampere). In particular, do not confuse this recipe
+    # (backend and layout support must be checked explicitly). Do not confuse this recipe
     # family -- `gptq_pro()` / `*_4bit()` -- with the experimental
     # `BACKEND.GPTQ_PRO` *kernel*; they share a name but are unrelated.
 
@@ -1920,8 +1938,7 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
 
     @classmethod
     def max_quality_4bit(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
-        """Highest-quality 4-bit recipe: `quality_4bit` plus GPTAQ activation-aware
-        error feedback (a.k.a. GPTQv2)."""
+        """GPTAQ 4-bit recipe candidate; see max_quality() for solver feature gaps."""
         return cls.max_quality(bits=4, group_size=group_size, **kwargs)
 
     @classmethod
@@ -2015,6 +2032,7 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
             "mock_quantization": "mock_quantization",
             "act_group_aware": "act_group_aware",
             "true_sequential": "true_sequential",
+            "static_groups": "static_groups",
             "damp_percent": "damp_percent",
             "damp_auto_increment": "damp_auto_increment",
             "opt_rotation_epochs": "opt_rotation_epochs",
@@ -2322,12 +2340,16 @@ class GPTQConfig(PreProcessorConfig):
     def _update_meta_payload(self, meta_payload: Dict[str, Any]) -> None:
         if self.gptaq is None:
             meta_payload["gptaq"] = None
-        elif self.foem is None:
+        else:
             device = self.gptaq.device
             meta_payload["gptaq"] = {
                 "alpha": self.gptaq.alpha,
                 "device": device if isinstance(device, str) else str(device),
             }
+        # Preserve the two independent inputs, including nulls that clear stale
+        # metadata. FOEM-only configs must survive save/reload without GPTAQ.
+        if self.foem is None:
+            meta_payload["foem"] = None
         else:
             device = self.foem.device
             meta_payload["foem"] = {
@@ -2336,11 +2358,17 @@ class GPTQConfig(PreProcessorConfig):
                 "device": device if isinstance(device, str) else str(device),
             }
 
+        # Preserve tuning controls rather than silently restoring defaults.
+        meta_payload["damp_percent"] = self.damp_percent
+        meta_payload["damp_auto_increment"] = self.damp_auto_increment
+        meta_payload["static_groups"] = self.static_groups
+        meta_payload["true_sequential"] = self.true_sequential
         meta_payload["mse"] = self.mse
         meta_payload["activation_weighted_mse"] = self.activation_weighted_mse
         meta_payload["mock_quantization"] = self.mock_quantization
         meta_payload["act_group_aware"] = self.act_group_aware
         meta_payload["hessian"] = {
+            "cuda_oom_policy": self.hessian.cuda_oom_policy,
             "chunk_size": self.hessian.chunk_size,
             "chunk_bytes": self.hessian.chunk_bytes,
             "staging_dtype": str(self.hessian.staging_dtype).split(".")[-1],
