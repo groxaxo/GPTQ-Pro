@@ -1,0 +1,82 @@
+{
+  "verified_at": "2026-10-06T21:25:26.676265+00:00",
+  "implementation_commit": "a3e2d41d0841dfccd0d2caea913a26c9ba3d10b2",
+  "strict_numerics_merge": "ee562093f09c62eff10dbe1d0ac6fe3066a50ccf",
+  "scoped_cpu_tests": {
+    "passed": 295,
+    "inherited_awq_deselected": 4,
+    "whole_repo_green_claim": false
+  },
+  "prebuilt_extension": {
+    "path": "/home/op/quant-jobs/qwen38-gptqpro-single24-hq-20261005/runs/pilot-a10f1e1f02a9/extensions/gptqmodel_gptq_pro_kernels_v3/gptqmodel_gptq_pro_kernels_v3.so",
+    "sha256": "e12fb37cb7aefa262471274e73f9d16ae58f3ace8fc1450153b4e617583ede08",
+    "sha256_pin_verified": true,
+    "source_build_identity_proven": false
+  },
+  "prior_failure": {
+    "job": "d266f1e1a6b2",
+    "cause": "prebuilt extension not on import path",
+    "executed_cases": 0
+  },
+  "gpu_jobs": {
+    "pinned-contract.json": "a3c473ab45df",
+    "pinned-real-4b.json": "88b96d441487"
+  },
+  "synthetic_shape_gate": {
+    "executed": 264,
+    "passed": 264,
+    "groups": [
+      16,
+      32,
+      64,
+      128
+    ],
+    "unique_model_shapes": 6,
+    "max_normalized_rmse": 0.00010631334180153015,
+    "tolerances": {
+      "atol": 0.002,
+      "rtol": 0.02,
+      "max_normalized_rmse": 0.002
+    },
+    "automatic_dispatch_only": true
+  },
+  "real_activation_probe": {
+    "calibration_tokens": 168,
+    "heldout_tokens": 80,
+    "executed_kernel_cases": 8,
+    "legacy_strict_roundtrip_exact": true,
+    "peak_allocated_bytes": 9270226432,
+    "modules": [
+      {
+        "name": "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+        "shape": [
+          4096,
+          2560
+        ],
+        "packer_oracle_exact": true,
+        "quantization_output_normalized_rmse": 0.03547780434779254,
+        "storage_output_normalized_rmse": 0.0016746508718333815,
+        "fp16_contract_output_normalized_rmse": 0.001991669167722928,
+        "max_kernel_normalized_rmse": 5.435845724152172e-05,
+        "kernel_cases_passed": true
+      },
+      {
+        "name": "model.language_model.layers.3.self_attn.k_proj.weight",
+        "shape": [
+          1024,
+          2560
+        ],
+        "packer_oracle_exact": true,
+        "quantization_output_normalized_rmse": 0.04272101737820552,
+        "storage_output_normalized_rmse": 0.0016716355198181222,
+        "fp16_contract_output_normalized_rmse": 0.0021691532031333552,
+        "max_kernel_normalized_rmse": 5.3208488606432904e-05,
+        "kernel_cases_passed": true
+      }
+    ]
+  },
+  "full_model_quantized_quality_verified": false,
+  "mtp_or_vision_verified": false,
+  "speedup_claim": false,
+  "scope": "Two real GPTQ linears with held-out source states plus 264 synthetic shape cases; not full quantized-model eval"
+}
