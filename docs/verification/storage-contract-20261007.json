@@ -1,0 +1,84 @@
+{
+  "stage": "additive storage and reference tooling",
+  "implementation_commit": "d3232b7ab0978f74f5a32b0e51ace17beb3753d2",
+  "verified_at": "2026-10-06T20:34:25.193923+00:00",
+  "tests": {
+    "passed": 189,
+    "inherited_awq_deselected": 4,
+    "new_tests": 115,
+    "whole_repo_green_claim": false
+  },
+  "real_weight_audit": {
+    "status": "passed",
+    "model": "local BF16 Qwen3.5-4B",
+    "modules": [
+      {
+        "name": "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+        "K": 2560,
+        "N": 4096,
+        "group_size": 64,
+        "source_tensor_sha256": "25af60b66fca36f2cce5ae08be73d55ed0ee1d51d41319ce5c79fced8cf908d5",
+        "integer_roundtrip_exact": true,
+        "safetensors_roundtrip_exact": true
+      },
+      {
+        "name": "model.language_model.layers.3.self_attn.k_proj.weight",
+        "K": 2560,
+        "N": 1024,
+        "group_size": 64,
+        "source_tensor_sha256": "3fedff8a1eac07fe4e017967be6d4455eadc97cb09319c2a05ade52204b3ac70",
+        "integer_roundtrip_exact": true,
+        "safetensors_roundtrip_exact": true
+      }
+    ],
+    "algorithm": "diagnostic RTN, not GPTQ",
+    "activation_provenance": "three synthetic BF16 rows"
+  },
+  "shape_manifest": {
+    "selected_decoder_linears": 200,
+    "unique_shapes": [
+      {
+        "K": 2560,
+        "N": 1024
+      },
+      {
+        "K": 2560,
+        "N": 4096
+      },
+      {
+        "K": 2560,
+        "N": 8192
+      },
+      {
+        "K": 2560,
+        "N": 9216
+      },
+      {
+        "K": 4096,
+        "N": 2560
+      },
+      {
+        "K": 9216,
+        "N": 2560
+      }
+    ],
+    "planned_kernel_cases": 264,
+    "executed_kernel_cases": 0
+  },
+  "code_sha256": {
+    "gptqmodel/utils/gptq_pro_contract.py": "35fe3b2f188c7e5676afaec0fa5b65e57b3964be5b14b726c350c9b76c11401b",
+    "gptqmodel/utils/gptq_pro_manifest.py": "27cffd27c21fcc92fef6e8ee3fb0ab9285b114146edcb63abffdc9364cda525b",
+    "scripts/quality_gptq_contract.py": "d2698e72fc3072a82f6af6c0ac7f95a4cbf8d6c61e670957c33bd148d511d9d0",
+    "tests/test_gptq_pro_storage_contract.py": "c57fadb0dbf106fbb7a2a4e4ed83c64890aa19bcb01211bec0e994358857dc4d",
+    "tests/test_gptq_pro_manifest.py": "bab161502781ce86dbdf9a2d8965aa8a4e971a11265dd0571f26dfd6e9c209eb",
+    "tests/test_gptq_contract_runner.py": "e9f537324f376f0e2cda9ed4ef928470e31efcb000eedcd90308e4c49eef4277",
+    "docs/STORAGE_NUMERICAL_CONTRACT.md": "661fe472b14698a03f733e199389358fa6cca2ad26ffb2f788c03ec17f0d0b40"
+  },
+  "live_kernel_parity_certified": false,
+  "full_model_quality_certified": false,
+  "mtp_vision_certified": false,
+  "solver_runtime_dispatch_changed": false,
+  "pending_strict_numerics_branch": "fix/quality-numerics-20261007",
+  "pending_strict_numerics_gpu_job": "6ffe4f0813b8",
+  "pending_branch_merged": false
+}
