@@ -313,6 +313,13 @@ class GPTQProcessor(LoopProcessor):
             PROCESS_USED_MEMORY: self.device_memory_report(),
         }
 
+        # Keep recovery evidence after the solver task is freed. These fields
+        # are serialized with the existing per-module quantization log.
+        cpu_events = getattr(g, "cpu_fallback_events", ())
+        stat["cuda_oom_policy"] = g.qcfg.hessian.cuda_oom_policy
+        stat["cpu_fallback_count"] = str(len(cpu_events))
+        stat["cpu_fallback_stages"] = "; ".join(event["stage"] for event in cpu_events)
+
         if workspace_summary:
             requests = int(workspace_summary.get("requests", 0) or 0)
             if requests:

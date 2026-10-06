@@ -212,6 +212,7 @@ class GPTQ:
         self.fwd_counter = 0
 
         self.fallback = self.qcfg.fallback
+        self.cpu_fallback_events = []
         self.expected_nsamples: Optional[float] = None
 
         self.H: Optional[torch.Tensor] = None
@@ -267,8 +268,21 @@ class GPTQ:
         return identity, damp
 
     def log_cpu_fallback(self, stage: str, source_device: torch.device) -> None:
-        """Explain when a memory-heavy GPTQ step moves from CUDA to CPU."""
+        """Apply the CUDA OOM policy before a memory-heavy step moves to CPU.
 
+        Called from each CUDA OOM handler, before allocating or copying on CPU.
+        Raising here preserves the original exception as the exception context.
+        """
+        if self.qcfg.hessian.cuda_oom_policy == "error":
+            raise RuntimeError(
+                f"Quantization: Module `{self.name}` -> CUDA OOM during {stage} "
+                f"on {source_device}; cuda_oom_policy='error' forbids CPU fallback. "
+                "Reduce workspace pressure or request sufficient resources and retry."
+            )
+
+        self.cpu_fallback_events.append({
+            "module": self.name, "stage": stage, "device": str(source_device),
+        })
         log.warn(
             "Quantization: Module `%s` -> CUDA OOM during %s on %s; falling back to CPU. "
             "Due to this fallback, the calculation may take much longer than normal.",
@@ -528,10 +542,7 @@ class GPTQ:
                 torch.device(inp_device).type == "cuda"
                 and "out of memory" in str(exc).lower()
             ):
-                log.warn(
-                    "GPTQ module '%s' fell back to CPU Hessian accumulation due to GPU OOM during batch processing.",
-                    getattr(self, "name", "<unknown>"),
-                )
+                self.log_cpu_fallback("Hessian accumulation", torch.device(inp_device))
                 reshaped_inp_cpu = reshaped_inp.to(device=torch.device("cpu"))
                 del reshaped_inp
                 if torch.cuda.is_available():
