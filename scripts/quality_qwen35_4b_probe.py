@@ -112,13 +112,96 @@ def tensor_hash(tensor) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def audit_live_quantized_linear(extension, inputs, source_weight, quant, scale, zero, g_idx, group_size=64):
+    """Run the unchanged CPU packer and pinned V3 against real solver tensors.
+
+    inputs are held-out captured activations. All distortion terms are pairwise;
+    they are not additive or a measurement of full-model quality.
+    """
+    import numpy as np
+    import torch
+    from gptqmodel.nn_modules.qlinear import PackableQuantLinear
+    from gptqmodel.utils.gptq_pro_contract import (
+        pack_int4, validate_v3_layout, dequantize_v3, v3_reference, error_metrics,
+    )
+    k = quant.shape[1]
+    n = quant.shape[0]
+    if inputs.ndim != 2 or inputs.shape[1] != k or not inputs.shape[0]:
+        raise ValueError("Real-activation V3 audit requires nonempty [M,K] inputs")
+    if not torch.isfinite(scale).all() or not (scale > 0).all() or not (zero == 8).all():
+        raise ValueError("Real-activation V3 audit requires positive scales and symmetric zero 8")
+    # A storage receiver executes the real pack_original without constructing an
+    # inference qlinear or invoking its AUTO/JIT loader. All inputs are CPU here.
+    receiver = torch.nn.Module()
+    receiver.bits = 4
+    receiver.pack_factor = 8
+    receiver.pack_dtype_bits = 32
+    receiver.pack_np_math_dtype = np.uint32
+    receiver.pack_np_dtype = np.int32
+    dense = torch.nn.Linear(k, n, bias=False, dtype=quant.dtype)
+    dense.weight.data.copy_(quant.detach().cpu())
+    sc, ze, idx = scale.detach().cpu().float(), zero.detach().cpu().float(), g_idx.detach().cpu()
+    expected_idx = torch.arange(k, dtype=torch.int32) // group_size
+    if not torch.equal(idx, expected_idx):
+        raise ValueError("Real-activation audit rejects nonsequential groups")
+    codes = torch.round((dense.weight.float() + (ze * sc)[:, idx.long()]) / sc[:, idx.long()]).T.contiguous().to(torch.int32)
+    expected_packed = pack_int4(codes)
+    PackableQuantLinear.pack_original(receiver, dense, sc, ze, idx)
+    if not torch.equal(receiver.qweight, expected_packed):
+        raise AssertionError("Actual packer and independent nibble oracle disagree")
+    validate_v3_layout(receiver.qweight, receiver.scales, group_size,
+                       qzeros=receiver.qzeros, g_idx=receiver.g_idx, qzero_format=2)
+    stored = {name: getattr(receiver, name).to(inputs.device) for name in ("qweight", "scales", "qzeros", "g_idx")}
+    kwargs = {"qzeros": stored["qzeros"], "g_idx": stored["g_idx"], "qzero_format": 2}
+    reconstructed = dequantize_v3(stored["qweight"], stored["scales"], group_size,
+                                   **kwargs, operand_dtype=torch.float32)
+    source_dtype = quant.dtype
+    source_result = (inputs.to(source_dtype).float() @ source_weight.to(inputs.device).T.float()).to(source_dtype)
+    solver_result = (inputs.to(source_dtype).float() @ quant.T.float()).to(source_dtype)
+    stored_result = (inputs.to(source_dtype).float() @ reconstructed.to(source_dtype).float()).to(source_dtype)
+    contract_result = v3_reference(inputs, stored["qweight"], stored["scales"], group_size, **kwargs)
+    result = {
+        "packing": "unchanged PackableQuantLinear.pack_original",
+        "activations": "held-out real BF16 source-model states",
+        "packer_oracle_exact": True,
+        "packed_sha256": {key: tensor_hash(value) for key, value in stored.items()},
+        "stored_weight_vs_solver": error_metrics(reconstructed.T, quant.float()),
+        "solver_vs_source_output": error_metrics(solver_result, source_result),
+        "stored_vs_solver_output": error_metrics(stored_result, solver_result),
+        "fp16_vs_source_dtype_output": error_metrics(contract_result, stored_result),
+        "tolerances": {"atol": .002, "rtol": .02, "max_normalized_rmse": .002},
+        "cases": [],
+    }
+    for value in result.values():
+        if isinstance(value, dict) and value.get("finite") is False:
+            raise FloatingPointError("Nonfinite real-activation error comparison")
+    for m in sorted({min(rows, inputs.shape[0]) for rows in (1, 4, 5, 64)}):
+        actual = extension.gptq_pro_gemm(inputs[:m].half().contiguous(), stored["qweight"], stored["scales"], group_size, "auto")
+        torch.cuda.synchronize(inputs.device)
+        expected = contract_result[:m]
+        metrics = error_metrics(actual, expected)
+        close = bool(torch.isclose(actual.float(), expected.float(), atol=.002, rtol=.02).all())
+        passed = metrics["finite"] and close and (metrics["normalized_rmse"] is None or metrics["normalized_rmse"] <= .002)
+        result["cases"].append({"M": m, "K": k, "N": n, "passed": passed, **metrics})
+    result["passed"] = all(case["passed"] for case in result["cases"])
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--expected-commit", help="Reject a changed worktree before a queued GPU test")
+    parser.add_argument("--extension-file", type=Path)
+    parser.add_argument("--extension-sha256")
     args = parser.parse_args()
+    if (args.extension_file is None) != (args.extension_sha256 is None):
+        parser.error("--extension-file and --extension-sha256 must be supplied together")
+    if args.extension_file is not None and args.preflight_only:
+        parser.error("A binary test cannot run in preflight-only mode")
+    if args.extension_file is not None and not args.expected_commit:
+        parser.error("A pinned binary test also requires --expected-commit")
     source = args.source.resolve(strict=True)
     output = args.output.resolve()
     if output.exists():
@@ -168,6 +251,11 @@ def main() -> int:
         device = torch.device("cuda:0")
         if torch.cuda.get_device_capability(device) != (8, 6):
             raise RuntimeError("The Ampere smoke gate requires sm_86")
+        extension = None
+        if args.extension_file is not None:
+            from gptqmodel.utils.gptq_pro_prebuilt import load_pinned_v3
+            extension, report["prebuilt_extension"] = load_pinned_v3(args.extension_file, args.extension_sha256)
+            report["pinned_loader_sha256"] = digest_file(ROOT / "gptqmodel/utils/gptq_pro_prebuilt.py")
         torch.manual_seed(787)
         torch.cuda.reset_peak_memory_stats(device)
         report["environment"] = {
@@ -279,6 +367,14 @@ def main() -> int:
                         "cpu_fallback_count": 0, "heldout_linear_nmse": nmse,
                         "quantized_tensor_sha256": tensor_hash(quant),
                     })
+                    if extension is not None and label == "strict_json_roundtrip":
+                        record["live_kernel"] = audit_live_quantized_linear(
+                            extension, heldout, source_weight, quant, scale, zero, g_idx,
+                        )
+                        if not record["live_kernel"]["passed"]:
+                            report["failed_module"] = record
+                            save()
+                            raise AssertionError("Real-activation V3 numerical parity failed")
                     del solver, dense, quant, scale, zero, g_idx, baseline, candidate, values
                     gc.collect()
                 record["roundtrip_tensor_exact"] = True
@@ -286,6 +382,9 @@ def main() -> int:
                 report["modules"].append(record)
                 del x, heldout, source_weight, reference
                 save()
+        if extension is not None:
+            report["kernel_parity_tested"] = True
+            report["real_activation_kernel_cases"] = sum(len(module["live_kernel"]["cases"]) for module in report["modules"])
         report["peak_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
         report["peak_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
         report["status"] = "passed"
