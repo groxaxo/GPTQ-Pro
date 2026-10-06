@@ -35,8 +35,8 @@ class GPTAQ(GPTQ):
 
     def add_batch(self, inp: torch.Tensor, out: torch.Tensor, batch_index: Optional[int] = None):
         with self.lock:
-            self.fwd_counter += 1
             self.process_batch(inp)
+            self.fwd_counter += 1
 
     # TODO FIXME: using v1 new process_batch kills v2 quantization quality, use original process_batch
     # sample counter based on batch request # instead of batched token #.
@@ -68,6 +68,10 @@ class GPTAQ(GPTQ):
     #     del native_inp, reshaped_inp
 
     def process_batch(self, inp):
+        self._check_finite(inp, "calibration input")
+        if self.qcfg.strict_numerics and inp.numel() == 0:
+            raise FloatingPointError(f"Quantization: Module `{self.name}` -> empty calibration input.")
+        self._validate_native_pair(inp)
         inp = inp.to(dtype=torch.float32)
         native_inp = self.native_inps.pop(0).to(device=inp.device, dtype=torch.float32)
         if len(inp.shape) == 2:
@@ -106,6 +110,7 @@ class GPTAQ(GPTQ):
             self.dXXT *= self.nsamples / (self.nsamples + batch_size)
 
         self.nsamples += batch_size
+        self.observed_activation_rows += inp.shape[1]
         inp = math.sqrt(2 / self.nsamples) * inp.float()
 
         self.H += inp.matmul(inp.t())
@@ -120,6 +125,7 @@ class GPTAQ(GPTQ):
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
         start = time.time()
+        self._validate_quantization_start()
 
         # TODO compilation failure for Torch >= 2.8
         if not TORCH_GTE_28:
@@ -233,6 +239,7 @@ class GPTAQ(GPTQ):
         torch_sync()
 
         avg_loss = torch.sum(Losses).item() / self.nsamples
+        self._check_loss(avg_loss)
 
         if math.isnan(avg_loss):
             print("Losses sum item:", torch.sum(Losses).item())
@@ -272,6 +279,7 @@ class GPTAQ(GPTQ):
 
         duration = time.time() - start
 
+        self._validate_result(Q, scale, zero)
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
     def free(self):
