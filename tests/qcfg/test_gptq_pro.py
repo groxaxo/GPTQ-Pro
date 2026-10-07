@@ -53,14 +53,26 @@ def test_named_preset_ladder():
     assert fast.mse == 0.0
     assert fast.gptaq is None
 
-    # quality: gptq_pro profile (GAR + MSE search + activation-weighted MSE).
+    # quality: validated g64 fail-closed GPTQ-Pro profile.
     quality = QuantizeConfig.quality_4bit()
     assert quality.bits == 4
+    assert quality.group_size == 64
     assert quality.mse == 2.0
     assert quality.activation_weighted_mse is True
+    assert quality.act_group_aware is True
     assert quality.gptaq is None
+    assert quality.fallback is None
+    assert quality.strict_numerics is True
+    assert quality.hessian.cuda_oom_policy == "error"
 
-    # max_quality: quality + GPTAQ error feedback.
+    # legacy quality remains available for historical reproducibility.
+    legacy = QuantizeConfig.legacy_quality_4bit()
+    assert legacy.group_size == 128
+    assert legacy.fallback is not None
+    assert legacy.strict_numerics is False
+    assert legacy.hessian.cuda_oom_policy == "cpu"
+
+    # max_quality: GPTAQ candidate path (not the validated default).
     maxq = QuantizeConfig.max_quality_4bit()
     assert maxq.bits == 4
     assert maxq.gptaq is not None and maxq.gptaq.alpha == 0.25

@@ -81,7 +81,9 @@ python -m pip install -e .
 ```python
 from gptqmodel import BACKEND, GPTQModel, QuantizeConfig
 
-qcfg = QuantizeConfig.quality_4bit(group_size=128)
+# Validated default: INT4 g64 + GAR + MSE2 + activation weighting,
+# strict numerics, and fail-closed CUDA Hessian handling.
+qcfg = QuantizeConfig.quality_4bit()
 qcfg.offload_to_disk = True
 
 model = GPTQModel.load(
@@ -192,13 +194,26 @@ compressed-tensors execution to the GPTQ-Pro kernel.
 | Preset | Use |
 |---|---|
 | `fast_4bit(desc_act=False)` | pipeline smoke tests |
-| `quality_4bit()` | recommended time/quality balance |
-| `max_quality_4bit()` | strongest named 4-bit recipe with GPTAQ feedback |
+| `quality_4bit()` | **default/recommended**: validated g64 fail-closed quality recipe |
+| `legacy_quality_4bit()` | previous g128 + smoothing-fallback defaults for reproducibility |
+| `max_quality_4bit()` | GPTAQ research candidate; not the validated default on Qwen3.5/3.8 |
 | `experimental_3bit_rotation()` | export experiment only; not executable by the local runtime |
 
-For Qwen3.8-27B, use group 64 for the quality build and compare against a group
-128 baseline before publishing. Calibration data must resemble the actual
-coding, agent, tool-use, multilingual, and long-document workload.
+`max_quality_4bit()` does **not** enable FOEM or rotation; it selects the separate GPTAQ feedback solver and remains an explicit research candidate.
+
+`quality_4bit()` now defaults to the exact recipe package that won the controlled
+QwenPaw/Qwen3.5-9B A/B experiment: symmetric INT4 g64, GAR, MSE=2 clipping,
+activation-weighted MSE, 5% damping, `strict_numerics=True`, no fallback, and
+`HessianConfig(cuda_oom_policy="error")`. On that 32-layer / 200-linear test it
+reduced held-out source-to-quant KL by **30.41%** versus matched plain GPTQ g64 at
+the same packed decoder byte size. The paired-document bootstrap interval for the
+KL improvement excluded zero. NLL/perplexity improvement did **not** reach the
+same evidence threshold, so this is a quantization-fidelity result rather than a
+blanket task-accuracy claim.
+
+For Qwen3.8-27B, the standard driver already defaults to preset `quality` and group
+64. Calibration data must resemble the actual coding, agent, tool-use,
+multilingual, and long-document workload.
 
 ## Ampere kernel architecture
 
@@ -220,7 +235,7 @@ overlay is retained as a validated negative result —
 `QuantizeConfig.dynamic` accepts exact PCRE skip rules:
 
 ```python
-qcfg = QuantizeConfig.max_quality_4bit(group_size=64)
+qcfg = QuantizeConfig.quality_4bit()
 qcfg.dynamic = {
     "-:^model\\.embed_tokens$": {},
     "-:^lm_head$": {},

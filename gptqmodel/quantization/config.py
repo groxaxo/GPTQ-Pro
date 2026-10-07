@@ -1816,7 +1816,7 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         cls,
         *,
         bits: int = 4,
-        group_size: int = 128,
+        group_size: int = 64,
         sym: bool = True,
         mse: float = 2.0,
         damp_percent: float = 0.05,
@@ -1827,16 +1827,23 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         **kwargs,
     ) -> "QuantizeConfig":
         """
-        Build a speed-preserving GPTQ quality profile.
+        Build the validated GPTQ-Pro 4-bit quality profile.
 
-        The recipe uses GPTQ-compatible serialization and enables offline GAR
-        (`act_group_aware`), MSE scale search, and adaptive damping. Runtime
-        compatibility must be verified for the selected backend, bits, groups,
-        and dtype; mixed dynamic layouts are not universally portable.
+        The default is the experimentally validated package used by
+        ``quality_4bit()``: symmetric INT4 group-64, sequential ``g_idx``, GAR,
+        MSE=2 clipping, activation-weighted MSE, 5% damping, strict numerical
+        checks, and fail-closed CUDA Hessian handling. No GPTAQ/FOEM/rotation is
+        enabled by this path.
 
-        Explicit ``fallback=None`` and ``gptaq=None`` disable preset defaults.
-        For fail-closed CUDA quality runs, pass a HessianConfig with
-        ``cuda_oom_policy="error"``.
+        The validated default intentionally has no silent RTN/SmoothMSE fallback:
+        an invalid or under-covered solve should fail rather than produce a
+        checkpoint that looks successful. Callers may still pass ``fallback=...``,
+        ``strict_numerics=False``, a custom HessianConfig, or another group size
+        explicitly. ``legacy_quality_4bit()`` preserves the previous g128 plus
+        smoothing-fallback defaults.
+
+        Runtime compatibility must still be verified for the selected backend,
+        bits, groups and dtype; mixed dynamic layouts are not universally portable.
         """
         if "quant_method" in kwargs and kwargs["quant_method"] != METHOD.GPTQ:
             raise ValueError("QuantizeConfig.gptq_pro() only supports `quant_method=METHOD.GPTQ`.")
@@ -1846,18 +1853,14 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         if "format" in kwargs and kwargs["format"] not in QUANT_METHOD_FORMAT_MAPPING[METHOD.GPTQ]:
             raise ValueError("QuantizeConfig.gptq_pro() only supports GPTQ-compatible output formats.")
 
-        # Presence matters: explicit fallback=None disables this preset's
-        # default. The canonical spelling wins over the legacy failsafe alias.
+        # The validated default fails closed. Explicit fallback/failsafe remains
+        # supported for compatibility and recovery experiments.
         if "fallback" in kwargs:
             fallback = kwargs.pop("fallback")
         elif failsafe is not None:
             fallback = failsafe
         else:
-            fallback = Fallback(
-                strategy=FallbackStrategy.RTN,
-                threshold="0.5%",
-                smooth=SmoothMSE(steps=32, maxshrink=0.9),
-            )
+            fallback = None
 
         if "gptaq" in kwargs:
             gptaq = kwargs.pop("gptaq")
@@ -1881,6 +1884,8 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
             "damp_auto_increment": damp_auto_increment,
             "fallback": fallback,
             "gptaq": gptaq,
+            "strict_numerics": True,
+            "hessian": HessianConfig(cuda_oom_policy="error", staging_dtype="float32"),
         }
         defaults.update(kwargs)
         return cls(**defaults)
@@ -1931,9 +1936,34 @@ class BaseQuantizeConfig(metaclass=QuantizeConfigMeta):
         return cls(bits=4, group_size=group_size, sym=True, **kwargs)
 
     @classmethod
-    def quality_4bit(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
-        """Balanced 4-bit quality recipe: the speed-preserving `gptq_pro()` profile
-        (GAR + MSE scale search + activation-weighted MSE + adaptive damping)."""
+    def quality_4bit(cls, *, group_size: int = 64, **kwargs) -> "QuantizeConfig":
+        """Validated default 4-bit recipe.
+
+        Defaults to symmetric INT4 g64 + GAR + MSE2 + activation-weighted MSE,
+        strict numerics and fail-closed CUDA Hessian handling. This is the
+        recommended production quantization path unless a workload-specific
+        experiment proves another recipe is better.
+        """
+        return cls.gptq_pro(bits=4, group_size=group_size, **kwargs)
+
+    @classmethod
+    def legacy_quality_4bit(cls, *, group_size: int = 128, **kwargs) -> "QuantizeConfig":
+        """Previous GPTQ-Pro quality defaults for reproducibility.
+
+        Preserves g128, the 0.5% RTN + SmoothMSE fallback, non-strict numerics,
+        and legacy CPU Hessian OOM recovery. Prefer `quality_4bit()` for new
+        quality builds.
+        """
+        kwargs.setdefault(
+            "fallback",
+            Fallback(
+                strategy=FallbackStrategy.RTN,
+                threshold="0.5%",
+                smooth=SmoothMSE(steps=32, maxshrink=0.9),
+            ),
+        )
+        kwargs.setdefault("strict_numerics", False)
+        kwargs.setdefault("hessian", HessianConfig(cuda_oom_policy="cpu", staging_dtype="float32"))
         return cls.gptq_pro(bits=4, group_size=group_size, **kwargs)
 
     @classmethod

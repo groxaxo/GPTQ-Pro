@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-07",
+  "default_recipe": {
+    "entrypoint": "QuantizeConfig.quality_4bit()",
+    "bits": 4,
+    "group_size": 64,
+    "sym": true,
+    "desc_act": false,
+    "act_group_aware": true,
+    "mse": 2,
+    "activation_weighted_mse": true,
+    "damp_percent": 0.05,
+    "damp_auto_increment": 0.01,
+    "strict_numerics": true,
+    "hessian": {
+      "staging_dtype": "float32",
+      "cuda_oom_policy": "error"
+    },
+    "fallback": null,
+    "gptaq": null,
+    "foem": null
+  },
+  "qwenpaw_9b_evidence": {
+    "layers": 32,
+    "quantized_linears": 200,
+    "calibration_tokens": 16272,
+    "heldout_scored_tokens": 7168,
+    "baseline_kl": 0.04767384,
+    "quality_kl": 0.03317633,
+    "kl_reduction_percent": 30.4098,
+    "baseline_nll": 0.86555421,
+    "quality_nll": 0.86474651,
+    "packed_decoder_bytes_each": 3730440192,
+    "paired_kl_improvement_95pct": [
+      0.00588705,
+      0.0266225
+    ],
+    "nll_improvement_statistically_established": false,
+    "full_saved_candidate_reload": true,
+    "mtp_tensors_byte_identical": 15,
+    "rtx3090_mtp_smoke": {
+      "drafted": 95,
+      "accepted": 77,
+      "generated": 128
+    },
+    "quality_quantization_stage_seconds": 932.1019999379932
+  },
+  "qwen38_27b_preflight": {
+    "local_source": "/home/op/qwen38-100task-bench-20261001/models/Qwen3.8-27B-BF16",
+    "exact_official_27b": true,
+    "layers": 64,
+    "linear_attention_layers": 48,
+    "full_attention_layers": 16,
+    "expected_quantized_modules": 400,
+    "mtp_num_hidden_layers": 1,
+    "prequantized_checkpoint": false
+  },
+  "qwen38_27b_timing_estimate_one_rtx3090": {
+    "same_method_calibration_scale": "~16k tokens",
+    "solver_and_calibration_minutes": [
+      45,
+      60
+    ],
+    "end_to_end_checkpoint_minutes": [
+      55,
+      75
+    ],
+    "conservative_shared_host_budget_minutes": 90,
+    "status": "estimate, not a completed full 27B timing"
+  },
+  "compatibility": {
+    "legacy_entrypoint": "QuantizeConfig.legacy_quality_4bit()",
+    "legacy_group_size": 128,
+    "legacy_smoothing_fallback": true,
+    "bare_QuantizeConfig_changed": false
+  },
+  "validation": {
+    "scoped_quality_and_repository_tests": {
+      "passed": 157,
+      "deselected_inherited_awq": 4
+    },
+    "qwen38_specific_tests": {
+      "passed": 18
+    },
+    "local_qwen38_preflight": {
+      "passed": true,
+      "source": "/home/op/qwen38-100task-bench-20261001/models/Qwen3.8-27B-BF16"
+    }
+  }
+}
