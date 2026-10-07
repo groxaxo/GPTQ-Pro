@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resumable long-context max-quality GPTQ-Pro recipe for Qwen3.8-27B.
+# Resumable long-context GPTQ-Pro quality recipe for Qwen3.8-27B.
+#
+# This chunked path exists for resumability/resource recovery. It is not claimed
+# equivalent to one full true-sequential 64-layer quality pass; use the standard
+# driver for the highest-quality production build.
 #
 # Four-layer chunks match the repeating 3x linear-attention + 1x full-attention
 # schedule. Only a fully saved chunk receives an atomic completion marker. A
@@ -82,7 +86,7 @@ for ((start=0; start<TOTAL_LAYERS; start+=CHUNK_LAYERS)); do
     --layer-start "$start" \
     --layer-count "$CHUNK_LAYERS" \
     --group-size "$GROUP_SIZE" \
-    --preset max_quality \
+    --preset quality \
     --calib-device cuda:0 \
     --offload-disk \
     > >(tee "$log") 2>&1 &
@@ -124,7 +128,7 @@ payload = {
     "calibration_sha256": h.hexdigest(),
     "nsample": int(nsample),
     "group_size": int(group_size),
-    "preset": "max_quality",
+    "preset": "quality",
     "layer_start": int(start),
     "layer_end_exclusive": int(end),
 }

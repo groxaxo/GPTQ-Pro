@@ -2,6 +2,7 @@
 import json
 
 import pytest
+import torch
 
 from gptqmodel.quantization import QuantizeConfig
 from gptqmodel.quantization.config import (
@@ -13,11 +14,28 @@ def roundtrip(config):
     return QuantizeConfig.from_quant_config(json.loads(json.dumps(config.to_dict())))
 
 
-def test_omitted_fallback_preserves_existing_preset_default():
+def test_gptq_pro_defaults_to_validated_fail_closed_recipe():
     cfg = QuantizeConfig.gptq_pro()
+    assert cfg.group_size == 64
+    assert cfg.fallback is None
+    assert cfg.strict_numerics is True
+    assert cfg.hessian.cuda_oom_policy == "error"
+    assert cfg.hessian.staging_dtype == torch.float32
+    assert cfg.gptaq is None
+    assert cfg.foem is None
+    assert cfg.act_group_aware is True
+    assert cfg.mse == 2.0
+    assert cfg.activation_weighted_mse is True
+
+
+def test_legacy_quality_preserves_previous_defaults():
+    cfg = QuantizeConfig.legacy_quality_4bit()
+    assert cfg.group_size == 128
     assert cfg.fallback.threshold == "0.5%"
     assert isinstance(cfg.fallback.smooth, SmoothMSE)
     assert cfg.fallback.smooth.steps == 32
+    assert cfg.strict_numerics is False
+    assert cfg.hessian.cuda_oom_policy == "cpu"
 
 
 @pytest.mark.parametrize("factory", [
