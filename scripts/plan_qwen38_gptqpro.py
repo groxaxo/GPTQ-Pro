@@ -234,7 +234,7 @@ def projected_int4_bytes(total_params: int, group_size: int) -> float:
 
 def build_recipe(total_params: int | None) -> Recipe:
     if total_params is not None and total_params <= 70_000_000_000:
-        preset = "max_quality"
+        preset = "quality"
         group_size = 64
         samples = 128
         tokens = 1024

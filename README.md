@@ -136,7 +136,7 @@ That model is a valid Qwen3.8 architecture reference but is already
 refuse to quantize it again. Serve it with vLLM; use the official BF16 checkpoint
 when producing a GPTQ-Pro artifact.
 
-### Maximum-quality INT4 recipe
+### Validated default INT4 quality recipe
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 \
@@ -147,7 +147,7 @@ python scripts/quant_qwen3_8_27b_gptqpro.py \
   --calibration-jsonl /data/qwen38-calibration.jsonl \
   --nsample 128 \
   --group-size 64 \
-  --preset max_quality \
+  --preset quality \
   --offload-disk
 ```
 

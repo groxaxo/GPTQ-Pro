@@ -42,7 +42,7 @@ A valid source must route to `Qwen3_5QModel`, expose exactly one MTP layer, and
 be unquantized BF16/FP16. GPTQ-Pro refuses to re-quantize FP8, AWQ, W8A16,
 GPTQ, or another precompressed checkpoint.
 
-## Maximum-quality long-context recipe
+## Validated quality long-context recipe
 
 For long-context coding, agent, tool-use, multilingual, and document workloads,
 do not calibrate exclusively on ~2K-token samples. Use a fixed 128-row JSONL
@@ -82,15 +82,13 @@ The quality settings are deliberately fixed to:
 ```text
 bits        = 4
 group_size  = 64
-preset      = max_quality
+preset      = quality
 sym         = true
 desc_act    = false
 nsample     = 128
 ```
 
-`max_quality` includes the normal GPTQ-Pro quality path plus GPTAQ
-activation-aware error feedback. This is an offline quality recipe and is
-substantially slower than the `quality` preset.
+`quality` is the validated default GPTQ-Pro path: g64 + GAR + MSE2 + activation weighting, strict numerics and fail-closed CUDA Hessian handling. `max_quality` remains available as an explicit GPTAQ research candidate, but it is not the validated default and can be substantially slower.
 
 ## Crash-resumable long-context quantization
 
@@ -151,7 +149,7 @@ python scripts/quant_qwen3_8_27b_gptqpro.py \
   --layer-start 20 \
   --layer-count 4 \
   --group-size 64 \
-  --preset max_quality \
+  --preset quality \
   --calib-device cuda:0 \
   --offload-disk
 ```
@@ -290,7 +288,7 @@ python scripts/quant_qwen3_8_27b_gptqpro.py \
   --calibration-jsonl /data/qwen38-calibration.jsonl \
   --nsample 128 \
   --group-size 64 \
-  --preset max_quality \
+  --preset quality \
   --offload-disk
 ```
 

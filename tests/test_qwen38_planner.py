@@ -40,7 +40,7 @@ def test_27b_uses_quality_demon_profile_and_fits_lab() -> None:
         trust_remote_code=False,
         assume_qwen38_max=False,
     )
-    assert plan.recipe.preset == "max_quality"
+    assert plan.recipe.preset == "quality"
     assert plan.recipe.group_size == 64
     assert plan.capacity.quantization_feasible is True
     assert plan.status == "unverified"

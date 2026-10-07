@@ -22,7 +22,7 @@ Examples:
       --model Qwen/Qwen3.8-27B \
       --out /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64 \
       --calib text --calibration-jsonl /data/qwen38-calibration.jsonl \
-      --nsample 128 --group-size 64 --preset max_quality --offload-disk
+      --nsample 128 --group-size 64 --preset quality --offload-disk
 """
 from __future__ import annotations
 
