@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the resumable Qwen3.8 long-context quantizer only during the local
-# 00:00-07:00 window. The hard wall-clock deadline is enforced even if a
-# persistent systemd timer catches up after midnight.
+# Run the resumable Qwen3.8 long-context workflow only inside the configured
+# local 00:00-stop-time window. Four-layer chunk markers make interruption safe;
+# the next invocation repeats only the active, incomplete chunk.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -20,54 +20,81 @@ BENCH_CONTEXTS="${BENCH_CONTEXTS:-2048,8192,32768}"
 BENCH_NEW_TOKENS="${BENCH_NEW_TOKENS:-128}"
 STOP_GRACE_SECONDS="${STOP_GRACE_SECONDS:-120}"
 MIN_RUN_SECONDS="${MIN_RUN_SECONDS:-300}"
+NIGHTLY_TIMEZONE="${NIGHTLY_TIMEZONE:-Pacific/Auckland}"
+NIGHTLY_STOP_TIME="${NIGHTLY_STOP_TIME:-07:00:00}"
 
+for numeric_name in NSAMPLE GROUP_SIZE BENCH_NEW_TOKENS STOP_GRACE_SECONDS MIN_RUN_SECONDS; do
+  numeric_value="${!numeric_name}"
+  if [[ ! "$numeric_value" =~ ^[0-9]+$ ]]; then
+    echo "$numeric_name must be a non-negative integer, got: $numeric_value" >&2
+    exit 2
+  fi
+done
+if (( NSAMPLE <= 0 || GROUP_SIZE <= 0 || BENCH_NEW_TOKENS <= 0 )); then
+  echo "NSAMPLE, GROUP_SIZE, and BENCH_NEW_TOKENS must be positive" >&2
+  exit 2
+fi
+
+export TZ="$NIGHTLY_TIMEZONE"
 mkdir -p "$WORKDIR/logs" "$WORKDIR/state"
 BENCH_OUT="${BENCH_OUT:-$WORKDIR/benchmark-qwen38-gptqpro.json}"
 BENCH_DONE="$WORKDIR/state/benchmark.done.json"
 FINAL_MANIFEST="$FINAL_OUT/qwen38_resumable_manifest.json"
 NIGHTLY_LOG="$WORKDIR/logs/nightly-$(date +%F).log"
+LOCK_FILE="$WORKDIR/state/nightly.lock"
 
 exec > >(tee -a "$NIGHTLY_LOG") 2>&1
 
-echo "[nightly] started $(date --iso-8601=seconds)"
+echo "[nightly] started $(date --iso-8601=seconds) timezone=$NIGHTLY_TIMEZONE stop=$NIGHTLY_STOP_TIME"
 
-remaining_until_0700() {
-  python - <<'PY'
-from datetime import datetime
-now = datetime.now().astimezone()
-deadline = now.replace(hour=7, minute=0, second=0, microsecond=0)
-allowed = now.hour < 7
-seconds = max(0, int((deadline - now).total_seconds())) if allowed else 0
-print(1 if allowed else 0, seconds)
-PY
+if ! command -v flock >/dev/null 2>&1; then
+  echo "GNU flock is required (provided by util-linux on Ubuntu)" >&2
+  exit 2
+fi
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[nightly] another nightly workflow owns $LOCK_FILE; exiting"
+  exit 0
+fi
+
+remaining_until_stop() {
+  python scripts/qwen38_nightly_state.py remaining \
+    --timezone "$NIGHTLY_TIMEZONE" \
+    --stop-time "$NIGHTLY_STOP_TIME"
 }
 
-read -r allowed seconds_to_deadline < <(remaining_until_0700)
+read -r allowed seconds_to_deadline < <(remaining_until_stop)
 if [[ "$allowed" != "1" ]]; then
-  echo "[nightly] outside 00:00-07:00 local window; exiting without work"
+  echo "[nightly] outside 00:00-${NIGHTLY_STOP_TIME} $NIGHTLY_TIMEZONE; exiting without work"
   exit 0
 fi
 
 run_seconds=$((seconds_to_deadline - STOP_GRACE_SECONDS))
 if (( run_seconds < MIN_RUN_SECONDS )); then
-  echo "[nightly] only ${seconds_to_deadline}s remain before 07:00; not starting work"
+  echo "[nightly] only ${seconds_to_deadline}s remain before the stop boundary; not starting work"
   exit 0
 fi
 
-# A completed benchmark marker means the whole workflow is done and future timer
-# invocations become no-ops.
+# Do not trust marker existence alone. It is valid only when it still binds to
+# the current model directory, final manifest, benchmark report, and both hashes.
 if [[ -s "$BENCH_DONE" ]]; then
-  echo "[nightly] quantization and benchmark already complete"
-  exit 0
+  if python scripts/qwen38_nightly_state.py check-complete \
+      --marker "$BENCH_DONE" \
+      --report "$BENCH_OUT" \
+      --manifest "$FINAL_MANIFEST" \
+      --model "$FINAL_OUT"; then
+    echo "[nightly] quantization and strict benchmark already complete"
+    exit 0
+  fi
+  echo "[nightly] completion marker is stale; benchmark will be regenerated"
 fi
 
 export MODEL CALIBRATION_JSONL WORKDIR FINAL_OUT GPU_LIST NSAMPLE GROUP_SIZE
 
-# The assembler promotes qwen38_resumable_manifest.json together with the final
-# model in one directory rename. That manifest, rather than an early metadata
-# file, is the authoritative completion signal.
+# The assembler atomically promotes the final manifest with the model. That
+# manifest, rather than an early chunk report, is the authoritative build signal.
 if [[ ! -s "$FINAL_MANIFEST" ]]; then
-  echo "[nightly] quantization window: ${run_seconds}s before graceful deadline"
+  echo "[nightly] quantization budget: ${run_seconds}s before graceful TERM"
   set +e
   timeout --foreground --signal=TERM --kill-after="${STOP_GRACE_SECONDS}s" \
     "${run_seconds}s" bash scripts/qwen38_long_context_recipe.sh
@@ -80,10 +107,10 @@ if [[ ! -s "$FINAL_MANIFEST" ]]; then
         echo "[nightly] recipe returned success but final assembly manifest is missing" >&2
         exit 3
       fi
-      echo "[nightly] quantization/assembly completed"
+      echo "[nightly] quantization and assembly completed"
       ;;
     75|124|137|143)
-      echo "[nightly] scheduled pause reached; next midnight will resume"
+      echo "[nightly] scheduled pause reached; the next midnight will resume"
       exit 0
       ;;
     *)
@@ -93,17 +120,16 @@ if [[ ! -s "$FINAL_MANIFEST" ]]; then
   esac
 fi
 
-# Recompute the remaining wall-clock budget after assembly. If completion occurs
-# near 07:00 the benchmark is deferred to the next midnight rather than crossing
-# the user's stop boundary.
-read -r allowed seconds_to_deadline < <(remaining_until_0700)
+# Recompute the real elapsed-time budget after assembly. Timestamp arithmetic in
+# qwen38_nightly_state.py keeps this correct across Auckland DST transitions.
+read -r allowed seconds_to_deadline < <(remaining_until_stop)
 run_seconds=$((seconds_to_deadline - STOP_GRACE_SECONDS))
 if [[ "$allowed" != "1" || "$run_seconds" -lt "$MIN_RUN_SECONDS" ]]; then
-  echo "[nightly] final artifact is ready; benchmark deferred to next midnight"
+  echo "[nightly] final artifact is ready; strict benchmark deferred to next midnight"
   exit 0
 fi
 
-echo "[nightly] final artifact ready; starting benchmark"
+echo "[nightly] final artifact ready; starting strict benchmark"
 set +e
 CUDA_VISIBLE_DEVICES="$BENCH_GPU" \
 timeout --foreground --signal=TERM --kill-after="${STOP_GRACE_SECONDS}s" \
@@ -112,50 +138,26 @@ timeout --foreground --signal=TERM --kill-after="${STOP_GRACE_SECONDS}s" \
     --model "$FINAL_OUT" \
     --contexts "$BENCH_CONTEXTS" \
     --new-tokens "$BENCH_NEW_TOKENS" \
+    --expected-group-size "$GROUP_SIZE" \
+    --expected-preset max_quality \
     --output "$BENCH_OUT"
 rc=$?
 set -e
 
 if [[ "$rc" == "124" || "$rc" == "137" || "$rc" == "143" ]]; then
-  echo "[nightly] benchmark hit 07:00 boundary; it will rerun next midnight"
+  echo "[nightly] benchmark hit the stop boundary; it will rerun next midnight"
   exit 0
 fi
 if (( rc != 0 )); then
-  echo "[nightly] benchmark failed with exit code $rc" >&2
+  echo "[nightly] strict benchmark failed with exit code $rc; no completion marker written" >&2
   exit "$rc"
 fi
 
-python - "$BENCH_DONE" "$BENCH_OUT" <<'PY'
-import hashlib
-import json
-import os
-import sys
-import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
+python scripts/qwen38_nightly_state.py mark-complete \
+  --marker "$BENCH_DONE" \
+  --report "$BENCH_OUT" \
+  --manifest "$FINAL_MANIFEST" \
+  --model "$FINAL_OUT"
 
-marker = Path(sys.argv[1])
-report = Path(sys.argv[2])
-h = hashlib.sha256(report.read_bytes()).hexdigest()
-payload = {
-    "schema": "qwen38-nightly-complete/v1",
-    "completed_at": datetime.now(timezone.utc).isoformat(),
-    "benchmark_report": str(report),
-    "benchmark_sha256": h,
-}
-marker.parent.mkdir(parents=True, exist_ok=True)
-fd, tmp = tempfile.mkstemp(prefix=marker.name + ".", dir=marker.parent)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, marker)
-finally:
-    if os.path.exists(tmp):
-        os.unlink(tmp)
-PY
-
-echo "[nightly] COMPLETE: quantization + benchmark finished at $(date --iso-8601=seconds)"
+echo "[nightly] COMPLETE: quantization + strict benchmark finished at $(date --iso-8601=seconds)"
 echo "[nightly] benchmark report: $BENCH_OUT"
