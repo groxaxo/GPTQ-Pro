@@ -1,0 +1,61 @@
+{
+  "audit_time": "2026-10-14T20:07:33.331997+13:00",
+  "active_commit": "cdbe16de53537a3886b61fa1f11d2a9b34eb9ff0",
+  "main_commit": "4cce36fc82d75fccf2baf40076fb23a8ba71b125",
+  "remote_ahead_by": 17,
+  "active_git_status_unchanged": true,
+  "active_tracked_diff_unchanged": true,
+  "source_hashes_unchanged": {
+    "gptqmodel/utils/activation_spill.py": true,
+    "gptqmodel/quantization/config.py": true,
+    "gptqmodel/quantization/gptaq.py": true,
+    "gptqmodel/quantization/gptq.py": true,
+    "../run_quant.py": true,
+    "../verify_after.py": true,
+    "../vllm_probe.py": true,
+    "../policy.py": true
+  },
+  "tests": {
+    "active": {
+      "tests": 40,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "main": {
+      "tests": 312,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "syntax": {
+    "active": {
+      "python_files_parsed": 258,
+      "errors": []
+    },
+    "main": {
+      "python_files_parsed": 262,
+      "errors": []
+    }
+  },
+  "reproductions": {
+    "confirmed": 8,
+    "cases": 8
+  },
+  "vllm": {
+    "version": "0.24.0",
+    "path": "${VLLM_ENV}/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/auto_gptq.py",
+    "sha256": "e0b8266ea877fa209ad3b093197d3c2a0a17fc12c243fedb1e80bb71b39b2666",
+    "inspection": "One group_size drives both fused gate/up and down scale allocations; dynamic override is evaluated on fused prefix."
+  },
+  "observed_full_phase": "quantizing",
+  "schema_version": 1,
+  "evidence_kind": "historical_workstation_audit_not_release_certification",
+  "publication_scope": "Documentation and diagnostic evidence only; no implementation fixes.",
+  "notes": [
+    "Active and main tests overlap; 40 + 312 is not 352 unique tests.",
+    "No new GPU inference, quantization, kernel benchmark or quality certification.",
+    "observed_full_phase is a historical phase-file value, not current health/status."
+  ]
+}

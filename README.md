@@ -290,3 +290,10 @@ checkpoint.
 GPTQ-Pro remains based on the work of Qubitium, ModelCloud, the GPTQ authors,
 AutoGPTQ maintainers, and the broader quantization-kernel community. See
 [`CREDITS.md`](CREDITS.md). Licensed under Apache-2.0.
+
+## Audit reports
+
+The [14 October 2026 consistency audit](docs/audits/2026-10-14/README.md) documents
+legacy-campaign drift, validation defects and deployment-contract gaps, with scoped
+evidence and an ordered remediation plan. It does not claim those issues are fixed
+or qualify a new model artifact.
