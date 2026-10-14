@@ -7,6 +7,12 @@
 
 # Torch Fused INT4 Transformations
 
+> **Historical upstream/removed-backend reference.** The `torch_fused.py`
+> implementation discussed below is absent from this fork's current native
+> runtime. These CPU/XPU/AWQ transformations are not supported execution paths
+> here. See [current runtime limits](STATUS.md#native-runtime-contract) and the
+> [documentation index](README.md). The original technical discussion is retained.
+
 This note explains what `TorchFusedLinear.transform_xpu` and `transform_cpu`
 do to GPTQ-format tensors before calling the fused `torch.ops.aten` kernels.
 The goal is to document the exact tensor shapes, the axis permutations, and the

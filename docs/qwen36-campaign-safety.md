@@ -2,8 +2,16 @@
 
 This versions the campaign repairs from the 14 October 2026 consistency audit.
 The integration starts from main `4cce36fc82d75fccf2baf40076fb23a8ba71b125`.
-It preserves current main's strict numerics, FP32 Hessian staging and explicit
-CUDA OOM error policy. The legacy running checkout is not upgraded in place.
+The integrated code preserves strict numerics, FP32 Hessian staging and explicit
+CUDA OOM error policy. The interrupted legacy checkout is retained separately;
+its completed sequential export was subsequently recovered, not re-quantized.
+
+[Documentation index](README.md) · [Consolidated status](STATUS.md) ·
+[Native recovery and evidence](qwen36-native-qualification.md)
+
+This page owns new-attempt and automatic-admission rules. The native guide owns
+the distinct recovered-artifact path; do not treat an old blocked campaign status
+as a live status for all later artifacts.
 
 ## Current qualification
 
@@ -26,19 +34,20 @@ path is exercised by `native_model_probe.py` and documented in
 An evidence JSON, CPU fixture, successful quantization, tensor name count, or
 two correct short answers cannot grant backend support. A reviewed backend
 implementation and actual saved-fixture reload/execution evidence are required.
-This change does not certify an existing checkpoint, MTP, vision execution,
-long context, tool use, or model quality.
+The recovered checkpoint has separate structural and native-reload evidence;
+that scope does not certify MTP, vision execution, long context, tool use,
+representative model quality or deployment.
 
 ## Repair coverage
 
 | Audit issue | Implemented correction | Remaining qualification |
 |---|---|---|
 | F01 engine drift | New checkout on current main; exact imported engine, code, source, calibration, tokenizer and dependency identities | GPU quantization with the integrated tree |
-| F02 mixed recipe vs fused loader | Explicit recipe and source-pinned consumer rejection before expensive work | Exact backend save/reload/execution, TP2, dtype and output comparison |
-| F03 weak structure gate | Exact source-derived serialized inventory, packing relationships, group rules and protected tensor checks | Run the gate on an actual completed checkpoint |
+| F02 mixed recipe vs fused loader | Rejection before expensive work; separate native fixtures/reload preserve mixed boundaries | Automatic native admission and production distributed TP2 remain unqualified |
+| F03 weak structure gate | Exact inventory/packing/protected-byte checks; applied to the separate recovered checkpoint | Re-run on each new or changed artifact; prior results are not transferable |
 | F04 exit/status overwrite | Final exit outside exception handler; distinct terminal results | Real allocated runtime smoke after consumer support |
 | F05 wrong answers pass | Exact ordered answers, pinned template/profile and independent child-result checks | Held-out intended workload tests |
-| F06 weak pilot marker | Input fingerprint binding; representative pilot layers 0, 10 and 39; explicit reload and consumer evidence required | Representative serialized backend proof |
+| F06 weak pilot marker | Input fingerprints and layers 0, 10 and 39; native saved-fixture evidence is recorded separately | Fixture passes do not enable the unqualified automatic consumer registry |
 | F07 removable assertions | Explicit required validation errors, including optimized Python regression coverage | None specific to optimization |
 | F08 stale state/retry | Unique attempts, heartbeat, terminal aborts and isolated retry directories | Full GPU interruption/export fault exercise |
 | F09 sparse native FIFO | Native disk spill rejected; checked serial CPU layer spill ported independently | Native per-expert capture/replay remains unsupported |
@@ -163,10 +172,14 @@ remains the base.
 
 ## Before release
 
-1. Implement and prove the exact consumer contract on a small saved MoE fixture,
-   including ordinary blocks, layer 10, TP2, the intended dtype and reference outputs.
-2. Run an admitted pilot and full build from the pinned original source.
-3. Apply exact artifact/preservation checks and independently reload the saved artifact.
+1. Complete the exact target-consumer admission contract, including ordinary
+   blocks, layer 10, intended dtype/reference outputs and production distributed
+   TP2 when required. Existing native fixtures do not close every target gate.
+2. For a fresh integrated build, run its admitted pilot and full solve. For the
+   recovered legacy artifact, retain its original solver provenance instead of
+   claiming it was rebuilt with the new numerical policy.
+3. Apply exact artifact/preservation checks and independently reload the saved
+   artifact through the intended consumer, binding results to its identity.
 4. Measure held-out quality with the pinned intended chat template/reasoning profile,
    failure-replay tasks, tools, MTP and required context lengths as separate gates.
 5. Bind all evidence to the artifact and inputs before any promotion.

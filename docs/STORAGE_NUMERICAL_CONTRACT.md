@@ -1,5 +1,12 @@
 # GPTQ-Pro storage and numerical-contract tools
 
+[Documentation index](README.md) · [Current qualification](STATUS.md)
+
+The [original CPU-stage evidence](verification/storage-contract-20261007.json)
+and [later pinned GPU evidence](verification/pinned-v3-20261007.json) are separate
+snapshots. An old pending-stage statement does not override the later report,
+and neither report qualifies a changed artifact.
+
 This is additive diagnostic tooling. It does not replace the quantizer, packer,
 loader, kernel or serving route. The strict-numerics solver feature is independently
 gated and is not a dependency of this stage.

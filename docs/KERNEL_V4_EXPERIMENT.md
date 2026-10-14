@@ -1,5 +1,10 @@
 # GPTQ-Pro Ampere kernel V4 experiment
 
+[Documentation index](README.md) · [Current runtime](STATUS.md)
+
+This page retains a specific measured experiment; its timings are not a new
+benchmark on the documentation-review date. V3 remains the default kernel.
+
 ## Scope
 
 This document records the **V4 register-cached scale experiment** and its
@@ -37,10 +42,11 @@ The fix adds an opt-in overlay mode to V3
 - any future generation can include V3 (or a V4 that adopts the same
   protocol) as its behavioral baseline without symbol collisions.
 
-CI now compiles **both** generations: standalone validators, PyTorch
-extensions under the canonical ABIs (`gptqmodel_gptq_pro_kernels_v3` /
-`..._v4`), and runs `tests/kernels/test_gptq_pro_v4_exact.py`. On a GPU host
-the exactness gate can be made mandatory with
+Both generations have standalone validators and canonical PyTorch extension
+ABIs (`gptqmodel_gptq_pro_kernels_v3` / `..._v4`). Run the checks locally and
+include `tests/kernels/test_gptq_pro_v4_exact.py`; source/compile checks alone
+are not a passed GPU comparison. On an admitted GPU host the exactness gate
+can be made mandatory with
 `GPTQ_PRO_REQUIRE_V4_EXACT=1`, turning silent skips into hard failures.
 
 ## Validation results (RTX 3090, SM86, CUDA 12.8)

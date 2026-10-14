@@ -1,5 +1,11 @@
 # Validated GPTQ-Pro quality default
 
+[Documentation index](README.md) · [Qualification status](STATUS.md)
+
+This page owns current quality-factory defaults and the scoped selection
+rationale. The underlying [dated evidence](verification/validated-quality-default-20261007.json)
+retains the exact experiment and its limits.
+
 As of 7 October 2026, QuantizeConfig.quality_4bit() is the default recommended quality path.
 
 Resolved defaults:
@@ -37,7 +43,10 @@ The KL divergence reduction was 30.41%. Its paired-document bootstrap 95% interv
 
 The final MTP-preserving exported candidate also passed a full saved-candidate reload and RTX 3090 draft-MTP smoke. These runtime checks validate preservation, not the quantization-quality delta itself.
 
-## Qwen3.8-27B expected duration on one RTX 3090
+## Historical Qwen3.8-27B timing projection, not a measurement
+
+These are the 7 October 2026 planning estimates, not a current job ETA or a
+completed 27B timing. Do not apply them to the Heretic MoE campaign.
 
 The same 9B quality run recorded about 932 seconds of quantization-stage wall time for 32 layers / 200 linears and 16,272 calibration tokens. Qwen3.8-27B has 64 layers / 400 selected linears, hidden size 5120 and FFN 17408.
 

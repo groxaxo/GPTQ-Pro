@@ -1,9 +1,13 @@
 # GPTQ-Pro Ampere kernel V3
 
+[Documentation index](README.md) · [Runtime qualification](STATUS.md)
+
 ## Scope
 
 V3 preserves GPTQ-Pro's symmetric INT4, native-`int32 qweight`, FP16 activation,
 FP32 accumulation contract. It does not repack or duplicate model weights.
+The loader's [explicit BF16 boundary](qwen36-native-qualification.md#precision-boundary)
+wraps this FP16 arithmetic; it does not introduce a native BF16 kernel.
 
 The runtime translation unit is
 `gptqmodel_ext/gptq_pro/gptq_pro_kernel_v3.cu`. It retains the validated V2
@@ -79,8 +83,13 @@ compute-sanitizer and the raw benchmark.
 
 The source contracts and build entrypoints are versioned as
 `gptqmodel_gptq_pro_kernels_v3` so stale V2 extension binaries cannot be loaded.
-Performance claims still require checked-in physical-GPU measurements and Nsight
-Compute evidence. The next kernel families remain:
+The [7 October pinned-binary evidence](verification/pinned-v3-20261007.json)
+records scoped synthetic-shape and actual-activation checks. It does not establish
+full-model quality or speedup for every workload. Performance claims still need
+their own physical-GPU measurements and profiler evidence. Research directions
+below are not an assertion that every later experiment is absent; the
+[V4 report](KERNEL_V4_EXPERIMENT.md) records its specific negative result.
+The remaining kernel directions include:
 
 - `ldmatrix` plus bank-conflict-safe shared-memory swizzling;
 - wider K stages and deeper `cp.async` pipelines;

@@ -1,5 +1,9 @@
 # GPTQ-Pro quality implementation plan — sm_86
 
+> **Historical scope:** Historical implementation plan; commands and machine state describe the original inspection.
+> Use the [current owning reference](VALIDATED_QUALITY_DEFAULT.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 Status: implementation contract, not a completed quantization or quality claim.
 Inspection: 7 October 2026 (12700 host clock), base `cdbe16d`.
 Original: `/home/op/src/GPTQ-Pro-int8-20261002` (dirty; preserve unchanged).

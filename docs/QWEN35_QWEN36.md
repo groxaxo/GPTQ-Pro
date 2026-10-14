@@ -1,5 +1,7 @@
 # Qwen 3.5 / Qwen 3.6 architecture family
 
+[Documentation index](README.md) · [Support and qualification](STATUS.md)
+
 Qwen 3.6 checkpoints intentionally reuse the Qwen 3.5 Transformers
 configuration classes, architecture names, and `model_type` values. GPTQ-Pro
 therefore routes Qwen 3.6 through the same definitions as Qwen 3.5; there is no
@@ -159,8 +161,9 @@ out_of_model_tensors = {"prefixes": ["mtp"]}
 ```
 
 The writer merges matching tensors into the saved checkpoint unchanged. After
-saving, compare source and output indexes and confirm every expected `mtp.*` key
-is present before deleting the source model.
+saving, compare source and output indexes and verify expected `mtp.*` bytes.
+Presence/preservation is only one gate, not permission to delete the source or
+proof of MTP execution. Follow the [release gates](VALIDATION.md#artifact-and-deployment-gates).
 
 ## Dense text-only driver
 
@@ -202,10 +205,15 @@ python scripts/quant_qwen3_5_moe.py \
 
 ## Runtime compatibility
 
-The local GPTQ-Pro kernel executes symmetric 4-bit checkpoints with
-`desc_act=False`, FP16 activations, and native `int32` packing. Act-order,
-asymmetric, W8A16 compressed-tensors, FP8, AWQ, GGUF, and non-4-bit artifacts
-must use their native runtimes instead.
+Use the [canonical runtime contract](STATUS.md#native-runtime-contract).
+The kernel executes FP16 operands with native INT4 packing; explicit BF16 native
+loads add a BF16 activation boundary while retaining FP16 packed scales. This
+is not native BF16 GEMM or permission to change a saved precision policy.
+
+Generic MoE routing does not qualify the Heretic selective g64/g32/BF16 policy
+for the audited fused-vLLM consumer. Its separate
+[campaign gates](qwen36-campaign-safety.md) and
+[native evidence](qwen36-native-qualification.md) govern that artifact.
 
 ## Regression tests
 
@@ -229,7 +237,10 @@ save/reload test, source-vs-candidate quality comparison, or real image prompt.
 2. Confirm configuration, processor/tokenizer, quantization metadata, and all
    expected safetensor shards are present.
 3. Compare source and output indexes for every `mtp.*` key.
-4. Load with FP16 and `BACKEND.AUTO` on supported Linux CUDA hardware.
+4. Reload with the exact qualified backend and declared precision policy on
+   supported Linux CUDA hardware. Use explicit BF16 native loading where the
+   recipe requires preserved BF16 boundaries; do not apply an unconditional
+   FP16 cast to the Heretic selective artifact.
 5. Run deterministic text generations and at least one image prompt.
 6. Measure perplexity or task quality against the source model.
 7. Record peak VRAM, throughput, package versions, CUDA version, and GPU model.

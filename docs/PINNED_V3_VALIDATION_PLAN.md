@@ -1,5 +1,9 @@
 # Close the live V3 gate with a pinned existing binary
 
+> **Historical scope:** Historical plan written before the pinned-binary implementation and its GPU evidence.
+> Use the [current owning reference](PINNED_V3_VALIDATION.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 Status: plan committed before implementation. Base: combined strict-numerics and
 storage-contract merge. Source model tests: existing local BF16 Qwen3.5-4B only.
 

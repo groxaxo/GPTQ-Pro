@@ -1,5 +1,9 @@
 # Qwen3.5 vLLM Comparison: Patched GPTQ-Pro vs Vanilla vLLM
 
+> **Historical scope:** Historical, version-specific external-runtime measurements; do not treat old dependency or performance claims as current native support.
+> Use the [current owning reference](STATUS.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 ## Scope
 
 This note compares the previously validated GPTQ-Pro Qwen3.5 deployment path against

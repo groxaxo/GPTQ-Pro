@@ -1,5 +1,9 @@
 # Launching Qwen 3.5 GPTQ / GPTQ-Pro checkpoints with the same vLLM path that hit ~100+ tok/s
 
+> **Historical scope:** Historical external-vLLM/Marlin launch record for specific dense text artifacts, not a native-kernel or Heretic deployment guide.
+> Use the [current owning reference](STATUS.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 This document shows the **actual serving path** used for the `qwen3_5_text` checkpoints that reached:
 
 - **104.96 tok/s** on **1x RTX 3090**

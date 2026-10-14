@@ -6,7 +6,9 @@
 > and input/output/KV-cache targets raise `NotImplementedError`.
 > Use `QuantizeConfig.dynamic` for existing per-module overrides, then verify
 > packing, save/reload and backend support. Mixed layouts are not automatically
-> portable. See [the quality implementation plan](QUALITY_IMPLEMENTATION_PLAN.md).
+> portable. Use the [current runtime contract](STATUS.md#native-runtime-contract)
+> and [recipe defaults](VALIDATED_QUALITY_DEFAULT.md), not illustrative proposal
+> examples, to determine executable support. [Documentation index](README.md).
 
 ## Overview
 

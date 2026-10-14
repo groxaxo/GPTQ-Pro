@@ -1,5 +1,9 @@
 # Next independently verifiable stage: storage and numerical contract
 
+> **Historical scope:** Historical design plan; pending-job statements below belong to that snapshot.
+> Use the [current owning reference](STORAGE_NUMERICAL_CONTRACT.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 Written before implementation on 7 October 2026. Base main: 719c956.
 Pending strict-numerics feature: 80cc708, gpuq job 6ffe4f0813b8. All GPUs were
 reserved at inspection; that feature must not be merged merely because time passed.

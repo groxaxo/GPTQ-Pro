@@ -1,7 +1,12 @@
 # Strict numerical integrity and effective recipe reporting
 
-This extends the quality foundation without changing the healthy quantization
-objective. `strict_numerics` is opt-in; the CUDA OOM policy remains separate.
+[Documentation index](README.md) · [Current defaults](VALIDATED_QUALITY_DEFAULT.md)
+
+Strict numerical checks are enabled by default by `quality_4bit()` and
+`gptq_pro()`. They remain configurable; `legacy_quality_4bit()` retains the
+older non-strict profile, and bare configuration construction must not be
+confused with the quality factory. The CUDA OOM policy is a separate setting;
+the quality factory selects fail-closed `error` behavior.
 
 ## Configure a strict candidate
 
@@ -92,7 +97,9 @@ using the same real captured BF16 source activations. For queued execution use
 loading the model. It does not download/export a checkpoint or certify full-model
 quantized quality, packed reload, V3 numerical parity, MTP or vision.
 
-GPU tests must use the local gpuq admission path. Do not bypass another job's
-reservation even when a card appears momentarily idle. The next-stage plan requires
-the real-model gate before this implementation is merged; a queued test is not a
-passing test.
+GPU tests must use normal local queue admission. Do not bypass another job's
+reservation even when a card appears momentarily idle. The historical
+[next-stage plan](QUALITY_NEXT_STEP_PLAN.md) records the original implementation
+gates; [dated evidence](README.md#dated-evidence) records subsequent outcomes.
+A queued test is not a passing test, and those outcomes do not certify a new
+artifact or a changed runtime.

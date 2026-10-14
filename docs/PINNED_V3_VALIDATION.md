@@ -1,5 +1,7 @@
 # Explicit prebuilt V3 validation
 
+[Documentation index](README.md) · [Current qualification](STATUS.md)
+
 ## Fixed failure
 
 The first live-kernel job failed because the extension was not importable by name.
@@ -51,6 +53,14 @@ Neither test proves full-model quantized NLL/KL, generation quality, MTP/vision,
 all possible activation distributions, alternative forced kernel modes or speedup.
 A BF16-versus-FP16 difference is not automatically evidence that one dtype is
 universally more precise.
+
+## Recorded evidence
+
+The [7 October 2026 evidence](verification/pinned-v3-20261007.json) records
+264/264 synthetic shape cases and eight live kernel cases on two actual source
+linears for a specific pinned binary. It preserves the earlier import failure
+as an infrastructure event with zero executed cases. These are dated results,
+not a fresh run for each new checkout and not full-model, MTP or vision approval.
 
 ## Test and release rules
 

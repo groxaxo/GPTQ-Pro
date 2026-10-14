@@ -1,8 +1,21 @@
 # Qwen3.8-27B support
 
+[Documentation index](README.md) · [Qualification status](STATUS.md) ·
+[Default recipe](VALIDATED_QUALITY_DEFAULT.md) · [Validation](VALIDATION.md)
+
 ## Status
 
-**Supported for GPTQ-Pro source quantization as of 15 August 2026.**
+The fail-closed source-quantization driver is implemented. This is architecture
+and driver support, not a blanket certificate for every exported artifact.
+The current [status matrix](STATUS.md) separates those milestones.
+
+> [!WARNING]
+> The merged nightly runner expects `max_quality`, while the supplied chunk
+> builder emits `quality`. Strict benchmarking of that artifact therefore fails
+> under the automatic runner's expectation. See the
+> [exact blocker](STATUS.md#b2-qwen38-nightly-preset-mismatch). Use explicit
+> `--expected-preset quality` for manual quality-artifact benchmarks; do not
+> change artifact metadata or disable strict checks to bypass the mismatch.
 
 The official `Qwen/Qwen3.8-27B` checkpoint reuses `model_type=qwen3_5`,
 `Qwen3_5ForConditionalGeneration`, and the exact dense 27B hybrid layout used
@@ -18,14 +31,11 @@ in source precision.
 
 ## Install
 
-```bash
-git clone https://github.com/groxaxo/GPTQ-Pro.git
-cd GPTQ-Pro
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip wheel setuptools
-python -m pip install -e .
-```
+Use the [repository installation procedure](../README.md#quick-start) in a
+dedicated environment. All commands below run from the repository root. On a
+shared workstation, submit GPU work through its normal queue; do not override
+queue-assigned devices inside an admitted job. Explicit device selections below
+illustrate exclusive standalone ownership, not a reservation bypass.
 
 Qwen3.8 requires `transformers>=5.8.0`. Remote code is not required for the
 official checkpoint and the release driver rejects widening that trust boundary.
@@ -43,6 +53,10 @@ be unquantized BF16/FP16. GPTQ-Pro refuses to re-quantize FP8, AWQ, W8A16,
 GPTQ, or another precompressed checkpoint.
 
 ## Validated quality long-context recipe
+
+The `quality` preset is selected from a scoped earlier experiment, not a
+completed qualification of this proposed long-context corpus. See the
+[default recipe evidence](VALIDATED_QUALITY_DEFAULT.md).
 
 For long-context coding, agent, tool-use, multilingual, and document workloads,
 do not calibrate exclusively on ~2K-token samples. Use a fixed 128-row JSONL
@@ -90,13 +104,54 @@ nsample     = 128
 
 `quality` is the validated default GPTQ-Pro path: g64 + GAR + MSE2 + activation weighting, strict numerics and fail-closed CUDA Hessian handling. `max_quality` remains available as an explicit GPTAQ research candidate, but it is not the validated default and can be substantially slower.
 
+## Non-resumable single-pass recipe
+
+**Prefer this full sequential driver when quantization quality is the priority.**
+It does not combine independently calibrated ranges. An interrupted attempt must
+be inspected and retried appropriately; the chunk workflow is not a numerical
+resume of this run.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2 \
+python scripts/quant_qwen3_8_27b_gptqpro.py \
+  --model Qwen/Qwen3.8-27B \
+  --out /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64 \
+  --calib text \
+  --calibration-jsonl /data/qwen38-calibration.jsonl \
+  --nsample 128 \
+  --group-size 64 \
+  --preset quality \
+  --offload-disk
+```
+
+Benchmark a full sequential quality artifact with its explicit preset and
+`--no-require-manifest`: such a build has no independent-chunk assembly manifest.
+All other strict metadata and workload gates still apply.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+python scripts/benchmark_qwen38_gptqpro.py \
+  --model /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64 \
+  --expected-group-size 64 \
+  --expected-preset quality \
+  --no-require-manifest \
+  --contexts 2048,8192,32768 \
+  --new-tokens 128 \
+  --output /path/to/new/qwen38-sequential-benchmark.json
+```
+
 ## Crash-resumable long-context quantization
 
-A monolithic 64-layer run can take many hours. The recommended recipe is
-resumable at the model's natural four-layer schedule boundary. Every chunk
-contains exactly three linear-attention layers and one full-attention layer.
-A successful chunk is saved as a complete mixed-precision checkpoint and gets
-an atomic `.done.json` marker containing the layer range and calibration hash.
+This is a **separate research workflow for operational resumability**, not the
+recommended substitute for a full sequential quality solve. Each range is
+quantized from the source independently; its preceding activation history may
+differ from one continuous true-sequential solve. Assembly does not restore that
+history. Benchmark the assembled result as a distinct recipe.
+
+Each four-layer range contains three linear-attention blocks and one
+full-attention block. A completed range is saved as a mixed-precision checkpoint
+and receives a `.done.json` marker. These markers support orchestration/retry;
+they are not full-model quality or deployment approval.
 
 If the process is interrupted while layers 28-31 are running, rerun the same
 command. Chunks 0-27 are skipped and only layers 28-31 are repeated.
@@ -159,8 +214,14 @@ python scripts/quant_qwen3_8_27b_gptqpro.py \
 
 ## Nightly 00:00-07:00 autonomous schedule
 
-For a workstation that should quantize only overnight, install the supplied
-user-level systemd timers:
+The supplied installer is an **opt-in operational interface**, not a validated
+end-to-end default: the [preset mismatch](STATUS.md#b2-qwen38-nightly-preset-mismatch)
+still needs a code repair. It also starts its commands directly, rather than
+submitting to a shared host's GPU queue. Do not enable it on a queue-managed
+workstation until admission is integrated. Reading or merging this guide does
+not install or enable timers.
+
+For an exclusively reserved host, the installer interface is:
 
 ```bash
 bash scripts/install_qwen38_nightly_systemd.sh
@@ -242,9 +303,13 @@ benchmark report. If either artifact changes, the benchmark is run again.
 
 ## Post-quantization benchmark
 
-The nightly runner automatically benchmarks the assembled artifact. If
-quantization finishes too close to the morning boundary, benchmarking is
-deferred to the next midnight rather than extending into daytime.
+The nightly runner attempts to benchmark the assembled artifact, but its
+hard-coded `max_quality` expectation currently conflicts with the `quality`
+builder. The manual command below supplies the actual expected recipe explicitly.
+This corrects the invocation, not the runner's code or qualification status.
+
+The runner's intended scheduling behavior defers benchmarking to the next
+midnight when insufficient time remains before the stop boundary.
 
 The default strict benchmark uses one visible GPU and contexts of 2K, 8K, and
 32K:
@@ -256,7 +321,7 @@ python scripts/benchmark_qwen38_gptqpro.py \
   --contexts 2048,8192,32768 \
   --new-tokens 128 \
   --expected-group-size 64 \
-  --expected-preset max_quality \
+  --expected-preset quality \
   --output /models/qwen38-gptq-pro-benchmark.json
 ```
 
@@ -267,6 +332,8 @@ CUDA_VISIBLE_DEVICES=0 \
 python scripts/benchmark_qwen38_gptqpro.py \
   --model /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64-longctx \
   --contexts 2048,8192,32768,65536 \
+  --expected-group-size 64 \
+  --expected-preset quality \
   --new-tokens 128 \
   --output /models/qwen38-gptq-pro-benchmark-64k.json
 ```
@@ -278,8 +345,8 @@ with `overall_passed=true`.
 
 The JSON report records and validates:
 
-- final preflight and resumable-manifest identity, hashes, 64 layers, g64
-  `max_quality`, and all 400 packed modules;
+- final preflight and, when required, resumable-manifest identity, hashes,
+  64 layers, the explicitly expected group/preset, and all 400 packed modules;
 - model load time and exact software/GPU environment;
 - peak allocated and reserved VRAM per context case;
 - first-token generation latency as a practical TTFT proxy;
@@ -334,41 +401,26 @@ with the range-specific GPTQ tensors from each completed chunk. A final
 `qwen38_resumable_manifest.json` records the chunk identities used to construct
 the artifact.
 
-## Non-resumable single-pass recipe
-
-If crash recovery is not required:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2 \
-python scripts/quant_qwen3_8_27b_gptqpro.py \
-  --model Qwen/Qwen3.8-27B \
-  --out /models/Qwen3.8-27B-GPTQ-Pro-INT4-g64 \
-  --calib text \
-  --calibration-jsonl /data/qwen38-calibration.jsonl \
-  --nsample 128 \
-  --group-size 64 \
-  --preset quality \
-  --offload-disk
-```
-
-Benchmark a non-resumable artifact with `--no-require-manifest` while retaining
-all other strict gates that apply to its preflight report.
-
 ## Validation gate
 
-Before publishing or deleting the BF16 source:
+These checks do not authorize source deletion or publishing automatically;
+follow the [artifact/deployment gates](VALIDATION.md#artifact-and-deployment-gates).
+For a full sequential build, use its own complete preflight/artifact evidence,
+not chunk markers. For independent-chunk research exports, additionally:
 
 1. confirm all 16 completion markers are present;
 2. inspect `qwen38_resumable_manifest.json` and confirm one calibration hash and one recipe across every chunk;
-3. verify all 64 decoder layer ranges are present exactly once;
-4. load the assembled checkpoint through GPTQ-Pro;
-5. confirm all 400 expected decoder linear modules are GPTQ-packed;
-6. verify vision, norms, recurrent helpers, embeddings, LM head, and every `mtp.*` tensor remain source precision;
-7. require the strict benchmark report to contain `overall_passed=true`;
-8. compare BF16 and INT4 deterministic generations on additional held-out prompts;
-9. run held-out evaluations at 2K, 8K, 32K, 64K, and the intended maximum context;
-10. test multimodal input unless deployment is explicitly text-only;
-11. run the native RTX 3090 kernel validator and record VRAM, prefill speed, decode speed, and numerical errors.
+3. verify all 64 decoder layer ranges are present exactly once.
+
+For either build strategy:
+1. load the exact saved checkpoint through the intended GPTQ-Pro path;
+2. confirm all 400 expected decoder linear modules are GPTQ-packed;
+3. verify vision, norms, recurrent helpers, embeddings, LM head, and every `mtp.*` tensor remain source precision;
+4. require the strict benchmark report to contain `overall_passed=true`;
+5. compare BF16 and INT4 deterministic generations on additional held-out prompts;
+6. run held-out evaluations at 2K, 8K, 32K, 64K, and the intended maximum context;
+7. test multimodal input unless deployment is explicitly text-only;
+8. run the native RTX 3090 kernel validator and record VRAM, prefill speed, decode speed, and numerical errors.
 
 RTX 3090 kernel validation:
 
@@ -387,3 +439,34 @@ It preserves all norms, Gated DeltaNet `in_proj_a`, `in_proj_b`, convolution and
 recurrent state helpers, the vision tower/projector, embeddings, `lm_head`, and
 all `mtp.*` tensors. Do not use a broad `.*gate.*` exclusion because that would
 also preserve quantizable MLP `gate_proj` matrices.
+
+## External W8A16 reference
+
+The earlier README included a vLLM deployment example for
+`lued/Qwen3.8-27B-INT8-W8A16-MTP`. It is retained here as an external-runtime
+reference, not an implementation of W8A16 in GPTQ-Pro or a newly verified launch
+command. The release driver may inspect this prequantized source in preflight;
+it must not run a second GPTQ quantization pass on it.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 vllm serve \
+  lued/Qwen3.8-27B-INT8-W8A16-MTP \
+  --tensor-parallel-size 2 \
+  --quantization compressed-tensors \
+  --language-model-only \
+  --max-model-len 204800 \
+  --gpu-memory-utilization 0.93 \
+  --kv-cache-dtype fp8_e4m3 \
+  --calculate-kv-scales \
+  --enable-prefix-caching \
+  --enable-chunked-prefill \
+  --reasoning-parser qwen3 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --disable-custom-all-reduce \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+```
+
+Check the exact installed external consumer, artifact and hardware before using
+this historical configuration. Requested context, KV-cache dtype or MTP tokens
+are not measurements and do not qualify the Heretic native artifact.

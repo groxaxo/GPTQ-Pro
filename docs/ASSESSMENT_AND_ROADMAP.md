@@ -1,5 +1,9 @@
 # GPTQ-Pro — current assessment and roadmap
 
+> **Historical scope:** Historical July 2026 assessment, not the current support or recipe reference.
+> Use the [current owning reference](STATUS.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 > Updated for the Ampere kernel pipeline on 11 July 2026.
 >
 > This document distinguishes code shipped by this fork from external comparison

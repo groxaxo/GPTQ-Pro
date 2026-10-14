@@ -1,5 +1,9 @@
 # Next step: trustworthy numerics and effective recipe evidence
 
+> **Historical scope:** Historical pre-implementation plan; later merged behavior and evidence are documented separately.
+> Use the [current owning reference](QUALITY_NUMERICS.md) and [documentation index](README.md)
+> for present guidance. Original observations below are retained, not re-run.
+
 Status: approved execution plan; implementation status belongs in the verification
 report, not in aspirational examples. Written before code changes on 7 October 2026.
 Base: fdd923963c3afa8e1e23b923a62881bb2aca436c. Tests: local Qwen3.5-4B only.

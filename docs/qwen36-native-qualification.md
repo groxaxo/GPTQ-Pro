@@ -1,7 +1,14 @@
 # Native mixed-precision qualification and export recovery
 
+[Documentation index](README.md) · [Consolidated status](STATUS.md) ·
+[Campaign admission](qwen36-campaign-safety.md)
+
+This guide owns the recorded recovery/native evidence and precision procedure.
+Its dated results are not a fresh GPU run, a live queue status, or qualification
+of a newer commit merely because that commit contains the same documentation.
+
 The selective Qwen3.6 recipe uses native INT4 g64 gate/up, g32 down, and
-layer-10 INT4 g32 gate/up with BF16 down. The installed vLLM fused-expert
+layer-10 INT4 g32 gate/up with BF16 down. The audited vLLM 0.24.0 fused-expert
 consumer cannot express that recipe. This change implements and tests a
 separate native GPTQ-Pro path, without flattening the assignments.
 
@@ -101,7 +108,9 @@ The actual checkpoint loads on two RTX 3090 GPUs in about 70 seconds. All
 30,464 scale tensors and 256 protected layer-10 BF16 down projections match
 the saved artifact bit-for-bit. Exact basic outputs `ready` and `4` pass.
 
-The predeclared bounded functional profile passes **5 of 6 cases**:
+The predeclared bounded functional profile passes **5 of 6 cases**. This is
+not the nine-case HumanEval/OpenCode failure replay and does not use the intended
+Sharp/xhigh benchmark profile:
 
 | Case | Input tokens | Actual output | Result |
 | --- | ---: | --- | --- |
