@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the audited CPU safety baseline plus campaign regressions, without CUDA."""
+"""Run campaign, nightly-helper and quality-toolkit CPU regressions without CUDA."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-
 
 BASELINE = [
     "tests/qcfg/test_gptq_pro.py",
@@ -31,14 +30,33 @@ BASELINE = [
 ]
 
 
+QUALITY = [
+    "tests/test_quality_refinement.py",
+    "tests/test_quality_measurement.py",
+    "tests/test_quality_tools.py",
+    "tests/test_quality_release.py",
+    "tests/test_qwen38_nightly_state.py",
+    "tests/test_qwen38_benchmark_helpers.py",
+]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True, help="New results directory")
+    parser.add_argument(
+        "--output-dir", type=Path, required=True, help="New results directory"
+    )
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    tests = BASELINE + [str(path.relative_to(root)) for path in sorted((root / "tests").glob("test_qwen36_*.py"))]
+    tests = (
+        BASELINE
+        + QUALITY
+        + [
+            str(path.relative_to(root))
+            for path in sorted((root / "tests").glob("test_qwen36_*.py"))
+        ]
+    )
     env = os.environ.copy()
     env.update(
         CUDA_VISIBLE_DEVICES="",
@@ -68,14 +86,22 @@ def main(argv=None):
     ]
     started = time.monotonic()
     try:
-        result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(
+            command,
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
         code, log = result.returncode, result.stdout + result.stderr
     except subprocess.TimeoutExpired as exc:
         code = 124
         log = str(exc) + "\n"
     (output / "tests.log").write_text(log)
     report = {
-        "suite": "qwen36-campaign-cpu-v1",
+        "suite": "gptq-pro-campaign-and-quality-cpu-v2",
         "cuda_visible_devices": "",
         "exit_code": code,
         "seconds": round(time.monotonic() - started, 3),

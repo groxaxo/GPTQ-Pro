@@ -191,6 +191,11 @@ class RefinementConfig:
 
 def validate_splits(train_ids, validation_ids, test_ids=()):
     """IDs must identify whole conversations/documents, NOT adjacent token rows."""
+    for values in (train_ids, validation_ids, test_ids):
+        if not isinstance(values, (list, tuple)):
+            raise TypeError(
+                "split IDs must be lists or tuples of whole-document identities"
+            )
     splits = (tuple(train_ids), tuple(validation_ids), tuple(test_ids))
     for index, values in enumerate(splits):
         if index < 2 and not values:

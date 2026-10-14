@@ -119,11 +119,75 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 python scripts/quality_tools.py refine
   --output-dir new-scale-refinement --steps 50 --scale-only
 ```
 
-Omit `--scale-only` to test bounded rounding plus scale refinement. A zero-step
+Scale-only is the default for `refine`, `refine-batch`, and the public
+`refine_capture` function. Use `--joint-rounding` (or explicitly
+`scale_only=False` in Python) to test bounded rounding plus scale refinement.
+The low-level experimental `RefinementConfig` API is unchanged. A zero-step
 pass tests exact import/export preservation. Output is a **block fixture**, not
 a complete deployable checkpoint. Existing output directories are rejected.
 Inputs are checksummed, the tensor inventory is exact, and protected weights are
 copied without precision changes. No residual inference network is introduced.
+
+
+## Sequential expansion across expert captures
+
+The `refine-batch` command applies the same checked second pass to 1–128 captured
+blocks, one at a time. It does not collect missing activations, assemble a complete
+model, or promote candidates to a running server. Memory use is bounded by one
+block's optimization state rather than the entire batch.
+
+A plan pins both each capture and its manifest. Input paths must be relative to
+and remain within the plan directory; absolute paths, missing files, duplicate
+IDs, duplicate input pairs and escaping symlinks are rejected. Use real SHA256
+values computed from the exact files in place of the placeholders below:
+
+```json
+{
+  "schema": "gptq-refinement-batch-v1",
+  "blocks": [
+    {
+      "id": "layer0-expert211",
+      "capture": "captures/expert211.safetensors",
+      "manifest": "captures/expert211.json",
+      "capture_sha256": "<capture SHA256>",
+      "manifest_sha256": "<manifest SHA256>"
+    }
+  ]
+}
+```
+
+```bash
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 python scripts/quality_tools.py refine-batch \
+  --plan captures-plan.json --output-dir new-batch-results --steps 50
+```
+
+The whole plan is checked before output creation. Document-level train,
+validation and test assignments must remain consistent across **all** blocks,
+not only inside each individual capture. Inputs are checked again immediately
+before each block runs. A manifest's recorded hash describes the bytes parsed by
+the refiner, not a possibly changed file reread after optimization.
+
+Each block writes a new candidate fixture and a detailed `report.json`. The batch
+writes an atomically updated `batch.json` with the plan hash, per-block results,
+terminal state and `deployment_ready: false`. Existing output directories are
+refused rather than silently resumed or overwritten. A failed block or an
+interrupt stops the batch and records the failure; an under-covered block keeps
+its baseline for inspection and permits later blocks to be assessed, while the
+**batch still exits nonzero**. A process killed before cleanup may retain a
+`running` marker; that is never successful completion.
+
+### Process exit contract
+
+| Result | Exit code | Meaning |
+| --- | ---: | --- |
+| Improved, baseline retained, zero-step baseline, completed batch | 0 | The requested operation completed; this is not deployment approval. |
+| Under-covered calibration | 3 | Tuning was blocked for at least one block. |
+| Rejected numerical optimization candidate | 4 | The run must not be counted as successful tuning. |
+| Runtime error or unrecognized status | 1 | The requested operation failed. |
+| Keyboard interruption | 130 | The process was interrupted. |
+
+`--joint-rounding` remains experimental and opt-in for both single and batch
+commands. The original quantization presets and full-model drivers are unchanged.
 
 ## Coverage and calibration
 
@@ -203,8 +267,9 @@ The original checkpoints, source weights and GPU workloads were not changed.
 
 ## Verification and rollout boundary
 
-Run the three `tests/test_quality_{refinement,measurement,tools}.py` files and
-`scripts/test_qwen36_campaign_cpu.py` locally with CUDA hidden. The CUDA runner
+Run `scripts/test_qwen36_campaign_cpu.py` locally with CUDA hidden. Its standard
+suite now includes the four quality-toolkit test files, the existing campaign
+regressions and the nightly/benchmark helper tests. The CUDA runner
 requires a queue-assigned GPU, explicit file hashes and a pinned prebuilt
 extension; it does not build or download a kernel. Never use an idle-but-reserved
 GPU belonging to another job. A queued test is not a passed test.
@@ -234,3 +299,17 @@ and unchanged integer codes, zero points and group indices. Only scales changed.
 
 See [the machine-readable verification record](quality-refinement-results-20261015.json)
 for exact pilot metrics, test counts, source hashes and CUDA tolerances/results.
+
+## Merge-readiness verification
+
+The release integration adds scale-only command defaults, an explicit joint-mode
+flag, nonzero blocked/rejected statuses, sequential batch plans and stricter
+split-ID types. The earlier pilot and native-CUDA record above remain dated,
+unchanged evidence; a source merge does not turn those measurements into a new
+full-model experiment.
+
+See [release verification](verification/quality-refinement-release-20261015.json)
+for fresh CPU regression counts, exact two-capture replay, source hashes and the
+unchanged-kernel evidence comparison. Batch replay reuses the earlier capture
+splits solely to establish reproducibility; it is not new independent evidence
+of accuracy or statistical significance.

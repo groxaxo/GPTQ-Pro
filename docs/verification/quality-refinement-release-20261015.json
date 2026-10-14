@@ -1,0 +1,74 @@
+{
+  "schema": "quality-refinement-release-v1",
+  "verified_at": "2026-10-15T09:14:40.709729+13:00",
+  "integration_base": "c02dd675ad74cec2cc79f654d3c135ac225c8e23",
+  "main_base": "f7a7a16892b48f1e970e9b2c9b5ebebfd9a3cbf7",
+  "tests": {
+    "tests": 650,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "suite": "gptq-pro-campaign-and-quality-cpu-v2",
+  "cpu_only_this_release": true,
+  "public_refinement_default": "scale-only",
+  "experimental_joint_flag": "--joint-rounding",
+  "base_quantization_presets_changed": false,
+  "batch_replay": [
+    {
+      "expert": 211,
+      "tensor_exact": true,
+      "packed_tensor_bytes": 1755136,
+      "selected_step": 10,
+      "baseline_test_nmse": 0.0091564663989297,
+      "replayed_test_nmse": 0.008888183578827024,
+      "rounding_enabled": false,
+      "source_modified": false
+    },
+    {
+      "expert": 62,
+      "tensor_exact": true,
+      "packed_tensor_bytes": 1755136,
+      "selected_step": 10,
+      "baseline_test_nmse": 0.009362130465370174,
+      "replayed_test_nmse": 0.009040360517213648,
+      "rounding_enabled": false,
+      "source_modified": false
+    }
+  ],
+  "batch_replay_scope": "Exact reproducibility using existing captures, not a new independent quality experiment",
+  "historical_cuda": {
+    "cases": 24,
+    "new_gpu_runs": 0,
+    "kernel_code_unchanged": true,
+    "replayed_tensor_payloads_identical": true,
+    "code_sha256": "933619cfe1e446701bc0d21602bb8ada6acf7aefc931d66376ca0dcb19161aad"
+  },
+  "historical_evidence_sha256": "f3b24024ab85d5e4f584a7b4c95d408b34aaf8b7255865318a6335e6ab85fe9f",
+  "source_weights_modified": false,
+  "production_weights_modified": false,
+  "gpu_jobs_modified": false,
+  "full_model_deployment_qualified": false,
+  "code_sha256": {
+    "gptqmodel/models/writer.py": "b99c336b66aab1fdbca5559506f807b12ae5d7f74e0782d08888ad9279e0302d",
+    "gptqmodel/quantization/refinement.py": "fa86b63af8d90d91265031782c01ef108310f7f7accee77ede26b10996f1c077",
+    "gptqmodel/utils/quality_allocation.py": "3b8fdd4947781f31c986ddc421c3022774324d618dfe17979658583d5f459072",
+    "gptqmodel/utils/quality_coverage.py": "6f967c2fa2698b65d5583eef3f3c835e10173c7f33a44c4dd1cf3604785d4012",
+    "gptqmodel/utils/quality_metrics.py": "7cbb72524d24d23c538fa4ac9479cadbd24a779fb220ccbdf2b668c872136838",
+    "gptqmodel/utils/quant_log.py": "2815bb6b39337864857a0c50952f8251ffac0af1364cf10c836b76f5620ed93e",
+    "scripts/quality_refinement_batch.py": "0cbc7a6a48a4a704be543761bb6097a52eb6ac54b0c9fc9e8f4f0584bf9ee672",
+    "scripts/quality_refinement_kernel.py": "22699225162101b212cdf805503f29ba5a6441a9806a3fce5f05cd7759c124ff",
+    "scripts/quality_refinement_probe.py": "588c022085ccfb2207930d2d0ffff5968f3bea84a1b7d5e2e8cb719c4798341b",
+    "scripts/quality_tools.py": "39a30298d0eefc5620bd862efa984ed9dea43103eb4264576b9f13531647385d",
+    "scripts/test_qwen36_campaign_cpu.py": "56912b9a091d9df1e33d80813bed5c121f9f350150f4a727606b4a0079166db6",
+    "tests/test_quality_measurement.py": "f93d3f5edbb008eaa9fe37edf8097f490d82a237327818f59649e9ccfd9648fc",
+    "tests/test_quality_refinement.py": "7c930d778f44ef864dc540308da939c431bad28162569d34aad3e76c739d5a37",
+    "tests/test_quality_release.py": "b0811a6eabe38953125ca6aa770502eb301b661a4fe13088e6fe12e00cd793ff",
+    "tests/test_quality_tools.py": "44ab2d8bd49ac834bb66791342e322aacc65b1e81deccfdd2629fd9802ecbd39"
+  },
+  "documentation_checks": {
+    "relative_links": 112,
+    "code_blocks": 10,
+    "syntax_only_no_examples_executed": true
+  }
+}

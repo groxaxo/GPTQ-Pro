@@ -35,7 +35,7 @@ def write_new_json(path, data):
 
 
 def refine_capture(
-    capture_path, manifest_path, output_dir, *, steps=50, scale_only=False, device="cpu"
+    capture_path, manifest_path, output_dir, *, steps=50, scale_only=True, device="cpu"
 ):
     import torch
     from safetensors.torch import load_file, save_file
@@ -55,7 +55,11 @@ def refine_capture(
     )
     if capture_path.stat().st_size > 2 * 2**30:
         raise ValueError("capture exceeds the 2 GiB one-block limit")
-    manifest = json.loads(manifest_path.read_text())
+    if manifest_path.stat().st_size > 1024**2:
+        raise ValueError("capture manifest exceeds the 1 MiB limit")
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest = json.loads(manifest_bytes)
     if manifest.get("schema") != "gptq-refinement-capture-v1":
         raise ValueError("unsupported capture manifest schema")
     if sha256_file(capture_path) != manifest.get("capture_sha256"):
@@ -125,7 +129,7 @@ def refine_capture(
     )
     report.update(
         capture_sha256=manifest["capture_sha256"],
-        manifest_sha256=sha256_file(manifest_path),
+        manifest_sha256=manifest_sha256,
         config=asdict(config),
         full_model_validated=False,
         cuda_kernel_tested=False,
@@ -162,6 +166,19 @@ def refine_capture(
     return report
 
 
+def status_exit_code(status):
+    """Keep blocked, rejected and unknown results distinct from successful execution."""
+    if status in {"improved", "baseline_retained", "baseline_only", "completed"}:
+        return 0
+    if status == "blocked_undercoverage":
+        return 3
+    if status == "numerical_candidate_rejected":
+        return 4
+    if status == "interrupted":
+        return 130
+    return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -181,8 +198,35 @@ def main(argv=None):
     refine.add_argument("--manifest", type=Path, required=True)
     refine.add_argument("--output-dir", type=Path, required=True)
     refine.add_argument("--steps", type=int, default=50)
-    refine.add_argument("--scale-only", action="store_true")
+    mode = refine.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--scale-only",
+        dest="scale_only",
+        action="store_true",
+        help="Refine stored scales only (default).",
+    )
+    mode.add_argument(
+        "--joint-rounding",
+        dest="scale_only",
+        action="store_false",
+        help="Explicitly enable experimental rounding plus scale tuning.",
+    )
+    refine.set_defaults(scale_only=True)
     refine.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    batch = commands.add_parser(
+        "refine-batch", help="Refine checksum-bound captures sequentially."
+    )
+    batch.add_argument("--plan", type=Path, required=True)
+    batch.add_argument("--output-dir", type=Path, required=True)
+    batch.add_argument("--steps", type=int, default=50)
+    batch.add_argument(
+        "--joint-rounding",
+        dest="scale_only",
+        action="store_false",
+        help="Enable experimental joint tuning instead of the scale-only default.",
+    )
+    batch.set_defaults(scale_only=True)
+    batch.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args(argv)
     if getattr(args, "device", "cpu") == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -223,6 +267,26 @@ def main(argv=None):
                 {"stored_bytes": result["stored_bytes"], "full_model_validated": False}
             )
         )
+    elif args.command == "refine-batch":
+        from scripts.quality_refinement_batch import refine_batch
+
+        result = refine_batch(
+            args.plan,
+            args.output_dir,
+            steps=args.steps,
+            scale_only=args.scale_only,
+            device=args.device,
+        )
+        print(
+            json.dumps(
+                {
+                    "status": result["status"],
+                    "blocks": len(result["blocks"]),
+                    "output": str(args.output_dir),
+                }
+            )
+        )
+        return status_exit_code(result["status"])
     else:
         result = refine_capture(
             args.capture,
@@ -241,6 +305,7 @@ def main(argv=None):
                 }
             )
         )
+        return status_exit_code(result["status"])
     return 0
 
 
