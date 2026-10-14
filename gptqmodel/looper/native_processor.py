@@ -12,8 +12,10 @@ from ..looper.loop_processor import ExecutionConfig, LoopProcessor
 from ..looper.named_module import NamedModule
 from ..models import BaseQModel
 from ..quantization.config import QuantizeConfig
+from ..utils.activation_spill import reject_native_spill
 from ..utils.logger import setup_logger
 from ..utils.torch import CPU, DEVICE_1
+
 
 log = setup_logger()
 
@@ -37,6 +39,9 @@ class NativeProcessor(LoopProcessor):
     ):
         """Initializes the processor and enables single-pass input capture."""
 
+        # Sparse expert captures need explicit replay identities, not a FIFO
+        # indexed by the global calibration batch number.
+        reject_native_spill()
         super().__init__(
             tokenizer=tokenizer,
             qcfg=qcfg,

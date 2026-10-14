@@ -36,6 +36,8 @@ optimized around one path: **symmetric INT4 GPTQ on modern NVIDIA GPUs**. The
 Python distribution and import names remain `GPTQModel` and `gptqmodel` for API
 and checkpoint compatibility.
 
+For the Qwen3.6 Heretic campaign, see the [versioned safety gates](docs/qwen36-campaign-safety.md). The selective MoE recipe remains blocked until its exact consumer is qualified.
+
 ## Why GPTQ-Pro
 
 | Capability | What it provides |

@@ -14,6 +14,12 @@ import torch
 
 from .. import DEVICE_THREAD_POOL
 from ..nn_modules.hooked_linear import StopForward
+from ..utils.activation_spill import (
+    DiskLayerList,
+    layer_cache_list,
+    reject_parallel_layer_spill,
+    validate_layer_spill_placement,
+)
 from ..utils.attn_mask import normalize_seq_mask
 from ..utils.logger import setup_logger
 from ..utils.looper_helpers import (
@@ -24,6 +30,7 @@ from ..utils.looper_helpers import (
 )
 from ..utils.model import move_to, nested_move_to
 from ..utils.torch import torch_sync
+
 
 if TYPE_CHECKING:  # pragma: no cover - imports for typing only
     from logbar.progress import ProgressBar
@@ -218,7 +225,8 @@ class ForwardExecutor:
     ) -> List[List[torch.Tensor]]:
         """Run the forward pass sequentially on the current device."""
 
-        outputs: List[List[torch.Tensor]] = []
+        validate_layer_spill_placement(self.looper.gptq_model.quantize_config.calibration_data_device)
+        outputs: List[List[torch.Tensor]] = layer_cache_list() if need_outputs else []
         prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
         total_batches, batch_row_counts, total_rows = self._resolve_batch_progress(
             processor,
@@ -239,9 +247,11 @@ class ForwardExecutor:
                         exec_device = module_target
 
                 # Capture input device before moving - used for output placement
-                input_device = layer_inputs[batch_idx][0].device if layer_inputs[batch_idx] else cur_layer_device
+                cached_batch = layer_inputs[batch_idx]
+                input_device = cached_batch[0].device if cached_batch else cur_layer_device
 
-                layer_input = [move_to(inp, device=exec_device) for inp in layer_inputs[batch_idx]]
+                layer_input = [move_to(inp, device=exec_device) for inp in cached_batch]
+                del cached_batch
 
                 raw_mask = attention_masks[batch_idx]
                 attn_tensor = raw_mask if raw_mask is None else move_to(raw_mask, device=exec_device)
@@ -293,7 +303,8 @@ class ForwardExecutor:
                             module_output = module(*layer_input)
                         else:
                             module_output = module(*layer_input, **additional_inputs)
-                    except StopForward:
+                    except StopForward as exc:
+                        exc.__traceback__ = None
                         module_output = None
                     finally:
                         self.looper._set_processor_mask(processor, None)
@@ -318,6 +329,8 @@ class ForwardExecutor:
                     # This preserves calibration data placement when calibration_data_device is set
                     calib_device_cfg = self.looper.gptq_model.quantize_config.calibration_data_device
                     target_device = input_device if calib_device_cfg is not None else cur_layer_device
+                    if isinstance(outputs, DiskLayerList):
+                        target_device = torch.device("cpu")
                     primary = move_to(primary, device=target_device)
                     outputs.append([primary])
 
@@ -367,6 +380,8 @@ class ForwardExecutor:
         device_thread_pool=DEVICE_THREAD_POOL,
     ) -> List[List[torch.Tensor]]:
         """Fan batches across device replicas and preserve result ordering."""
+
+        reject_parallel_layer_spill(layer_inputs)
 
         effective_title = progress_title or (progress_stage or "Forward")
         total_batches, batch_row_counts, total_rows = self._resolve_batch_progress(
