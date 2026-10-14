@@ -1,0 +1,709 @@
+{
+  "schema_version": 1,
+  "recorded_at_utc": "2026-10-14T10:29:02.154912+00:00",
+  "status": "native_load_passed_functional_gate_failed",
+  "scope": "Recovered legacy sequential checkpoint; bounded native precision and functional qualification only",
+  "code_base_commit": "7e2884debedd399e754809232733835be56c78bd",
+  "runtime_code_sha256": "d4952ca485de22a0197a6a75afebfbf1535a00e5b86c97a771e555afeba12d65",
+  "runtime_digest_definition": "native_fixture.runtime_code_identity: gptqmodel Python, native kernel C++/CUDA, fixture and policy source bytes",
+  "cpu_regression": {
+    "tests": 523,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "junit_sha256": "3430979686573f3330b4043e01c2a63af06a26da3d52f0aa3b4764f3b4b8ca7c",
+    "test_files": [
+      "tests/qcfg/test_gptq_pro.py",
+      "tests/test_qwen38_planner.py",
+      "tests/test_qwen3_8_27b_support.py",
+      "tests/test_qwen3_5_27b_official.py",
+      "tests/models/test_qwen3_5_invariants.py",
+      "tests/test_qwen3_6_support.py",
+      "tests/test_quality_config_integrity.py",
+      "tests/test_quality_numerics.py",
+      "tests/test_hessian_oom_policy.py",
+      "tests/test_gptq_pro_storage_contract.py",
+      "tests/test_gptq_pro_manifest.py",
+      "tests/test_gptq_pro_prebuilt.py",
+      "tests/test_quality_recipe_evidence.py",
+      "tests/test_gptq_contract_runner.py",
+      "tests/test_gptq_live_probe.py",
+      "tests/test_qwen36_activation_spill.py",
+      "tests/test_qwen36_artifact_contract.py",
+      "tests/test_qwen36_calibration.py",
+      "tests/test_qwen36_campaign_provenance.py",
+      "tests/test_qwen36_campaign_state.py",
+      "tests/test_qwen36_consumer_contract.py",
+      "tests/test_qwen36_native_precision.py",
+      "tests/test_qwen36_native_snapshot.py",
+      "tests/test_qwen36_recover_export.py",
+      "tests/test_qwen36_runtime_validation.py"
+    ],
+    "cuda_visible_devices": "",
+    "result": "passed"
+  },
+  "recovery": {
+    "status": "recovered_structure_checked",
+    "quantized_modules": 30464,
+    "sequential_run_completed_log": "26f6907d37f45ecc87e6d162922ed857ca6004ecc70f10042bc4488289735f36",
+    "interrupted_quantize_config_sha256": "801577338d42ea6ff79d54a1de552259d88a17dd23d0266a41eaea1e54f0df4a",
+    "exported_bytes": 25853857504,
+    "copy_inventory_sha256": "d4bf2e1c21fd8f2732473cf0e9c2eee73049c97c794258f67fc5c3c808e22cf1",
+    "metadata_transformations": [
+      "Equivalent routed precision rules rewritten canonically; protection made explicit",
+      "Operational disk offload path removed"
+    ],
+    "quantization_rerun": false,
+    "source_modified": false,
+    "original_export_modified": false,
+    "strict_numerics_of_original_run_verified": false,
+    "raw_report_sha256": "86357e5ebee30d51a8e869b7e6877641d14a8d04d516dda5580763363d5ae811",
+    "structural": {
+      "status": "structure_checked",
+      "contract_version": 1,
+      "recipe": "qwen36-heretic-w4-mixed-g64-g32-l10-bf16-v1",
+      "policy_fingerprint": "aca3c56f914a47f048bf3fa8ac5cf08a015e20410b787b0bd01063ae27498d52",
+      "representation": "per-expert-gptq-int32-sequential",
+      "tensor_count": 123077,
+      "qweights": 30464,
+      "logical_projections": 30720,
+      "quantized_group_counts": {
+        "32": 10496,
+        "64": 19968
+      },
+      "preserved_tensor_count": 1221,
+      "protected_bytes_verified": 8016006880,
+      "mtp": 19,
+      "vision": 333,
+      "safetensors_files": 13,
+      "preservation_verified": true,
+      "config_sha256": {
+        "config.json": "63bf8cf4c8ea1ea7f985768e05362ffd13da66b87c6659d96221b913cf8caed6",
+        "quantize_config.json": "f1c7bcfaf48ef83647d5606850fa56a2346c94d511fb130a983d5020ba314485"
+      },
+      "asset_sha256": {
+        "chat_template.jinja": "c2aa7c3e2460e0041b6840e51f9bd8d8709b0da91f18d54502f5f7f08ff99983",
+        "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+        "tokenizer.json": "6f32ce20dc35f57a7f9ad1eac03525bd7d30f9df8cea6507e958279cc3657706",
+        "tokenizer_config.json": "b78d7687432566598b66847cae8b2d44bf06c733c42bdd10c2ac588e12e59983",
+        "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+        "generation_config.json": "d403197d7feb1b2e2d78121fd438a9fdb50ce1b9ec421b023515bccd64d97c15"
+      },
+      "inventory_sha256": "d4bf2e1c21fd8f2732473cf0e9c2eee73049c97c794258f67fc5c3c808e22cf1",
+      "artifact_sha256": "59babf4b57df6a4069599ee71129219c2187c6edb823b66cc4e44d07485df998",
+      "source_identity_sha256": "7418e129d00dbe1568e8e2285cb57bccbb465b970ffd69ade7b985ee948ceb6e",
+      "source_index_metadata": {
+        "declared_total_size": 70214363872,
+        "derived_total_size": 71903645408,
+        "total_size_matches": false,
+        "delta": 1689281536,
+        "exception": "source-index-total-size-excludes-indexed-auxiliary-v1",
+        "indexed_auxiliary_payload_bytes": 1689281536
+      },
+      "source_full_weight_hash_verified": false,
+      "coverage": "All output tensor bytes and preserved source bytes; no inference, GPU, or quality qualification"
+    }
+  },
+  "cuda_fixtures": [
+    {
+      "status": "fixture_passed",
+      "backend": "gptq-pro-native-fp16-kernel-bf16-boundary-v1",
+      "mode": "single",
+      "scope": "Saved representative expert fixture; not a full Qwen reload or production TP qualification",
+      "full_consumer_qualified": false,
+      "workload_qualified": false,
+      "checkpoint_sha256": "33cc63481234d8f0888529ebdfdce8121f4cc17b1b6594180eb371db79374b0e",
+      "source_config_sha256": "7ab8b108884cf4e5274b874e09ff30951e24d55cc8c6b33b8c1209edba5279dd",
+      "policy_fingerprint": "aca3c56f914a47f048bf3fa8ac5cf08a015e20410b787b0bd01063ae27498d52",
+      "representative_layers": [
+        0,
+        10,
+        39
+      ],
+      "hidden_size": 2048,
+      "intermediate_size": 512,
+      "experts_per_block": 2,
+      "group_counts": {
+        "32": 8,
+        "64": 8
+      },
+      "protected_bf16_preserved": true,
+      "fp16_scales_bitwise_preserved": true,
+      "thresholds": {
+        "atol": 0.002,
+        "rtol": 0.02,
+        "max_relative_rmse": 0.02
+      },
+      "cases": [
+        {
+          "layer": 0,
+          "batch": 1,
+          "max_abs_error": 1.9073486328125e-06,
+          "relative_rmse": 0.0017647416098043323,
+          "passed": true
+        },
+        {
+          "layer": 0,
+          "batch": 8,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0015194047009572387,
+          "passed": true
+        },
+        {
+          "layer": 0,
+          "batch": 128,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0013457395834848285,
+          "passed": true
+        },
+        {
+          "layer": 10,
+          "batch": 1,
+          "max_abs_error": 1.9073486328125e-06,
+          "relative_rmse": 0.0016345775220543146,
+          "passed": true
+        },
+        {
+          "layer": 10,
+          "batch": 8,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0029744263738393784,
+          "passed": true
+        },
+        {
+          "layer": 10,
+          "batch": 128,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0028481511399149895,
+          "passed": true
+        },
+        {
+          "layer": 39,
+          "batch": 1,
+          "max_abs_error": 1.9073486328125e-06,
+          "relative_rmse": 0.0016949805431067944,
+          "passed": true
+        },
+        {
+          "layer": 39,
+          "batch": 8,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.00160873681306839,
+          "passed": true
+        },
+        {
+          "layer": 39,
+          "batch": 128,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0013591342139989138,
+          "passed": true
+        }
+      ],
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "extension_sha256": "c1ef8d0d842d04ffce40f721e6229ac68128e4bd9b07ca63a5c0c4cf0e994889",
+      "devices": [
+        {
+          "name": "NVIDIA GeForce RTX 3090",
+          "capability": [
+            8,
+            6
+          ],
+          "peak_allocated_bytes": 30843392
+        }
+      ],
+      "runtime_code_sha256": "d4952ca485de22a0197a6a75afebfbf1535a00e5b86c97a771e555afeba12d65",
+      "seconds": 5.678,
+      "raw_report_sha256": "b278a6fc15600746dc10bae7e27ab6613dceb49939f4b33f223eed1833b0f79e",
+      "queue_job_id": "104f8cf47bc7"
+    },
+    {
+      "status": "fixture_passed",
+      "backend": "gptq-pro-native-fp16-kernel-bf16-boundary-v1",
+      "mode": "tp2",
+      "scope": "Saved representative expert fixture; not a full Qwen reload or production TP qualification",
+      "full_consumer_qualified": false,
+      "workload_qualified": false,
+      "checkpoint_sha256": "33cc63481234d8f0888529ebdfdce8121f4cc17b1b6594180eb371db79374b0e",
+      "source_config_sha256": "7ab8b108884cf4e5274b874e09ff30951e24d55cc8c6b33b8c1209edba5279dd",
+      "policy_fingerprint": "aca3c56f914a47f048bf3fa8ac5cf08a015e20410b787b0bd01063ae27498d52",
+      "representative_layers": [
+        0,
+        10,
+        39
+      ],
+      "hidden_size": 2048,
+      "intermediate_size": 512,
+      "experts_per_block": 2,
+      "group_counts": {
+        "32": 8,
+        "64": 8
+      },
+      "protected_bf16_preserved": true,
+      "fp16_scales_bitwise_preserved": true,
+      "thresholds": {
+        "atol": 0.002,
+        "rtol": 0.02,
+        "max_relative_rmse": 0.02
+      },
+      "cases": [
+        {
+          "layer": 0,
+          "batch": 1,
+          "max_abs_error": 1.9073486328125e-06,
+          "relative_rmse": 0.0017719134921208024,
+          "passed": true
+        },
+        {
+          "layer": 0,
+          "batch": 8,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0016241833800449967,
+          "passed": true
+        },
+        {
+          "layer": 0,
+          "batch": 128,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0015116799622774124,
+          "passed": true
+        },
+        {
+          "layer": 10,
+          "batch": 1,
+          "max_abs_error": 1.9073486328125e-06,
+          "relative_rmse": 0.0030675209127366543,
+          "passed": true
+        },
+        {
+          "layer": 10,
+          "batch": 8,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.003631233936175704,
+          "passed": true
+        },
+        {
+          "layer": 10,
+          "batch": 128,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.003512921277433634,
+          "passed": true
+        },
+        {
+          "layer": 39,
+          "batch": 1,
+          "max_abs_error": 1.9073486328125e-06,
+          "relative_rmse": 0.0017771536950021982,
+          "passed": true
+        },
+        {
+          "layer": 39,
+          "batch": 8,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0016181706450879574,
+          "passed": true
+        },
+        {
+          "layer": 39,
+          "batch": 128,
+          "max_abs_error": 9.5367431640625e-07,
+          "relative_rmse": 0.0015024470631033182,
+          "passed": true
+        }
+      ],
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "extension_sha256": "c1ef8d0d842d04ffce40f721e6229ac68128e4bd9b07ca63a5c0c4cf0e994889",
+      "devices": [
+        {
+          "name": "NVIDIA GeForce RTX 3090",
+          "capability": [
+            8,
+            6
+          ],
+          "peak_allocated_bytes": 21824000
+        },
+        {
+          "name": "NVIDIA GeForce RTX 3090",
+          "capability": [
+            8,
+            6
+          ],
+          "peak_allocated_bytes": 12943360
+        }
+      ],
+      "runtime_code_sha256": "d4952ca485de22a0197a6a75afebfbf1535a00e5b86c97a771e555afeba12d65",
+      "seconds": 5.915,
+      "raw_report_sha256": "d1677f74b1697d3d854a192a8d6c7e123b439e77d6ba33ad068f34eb80d73884",
+      "queue_job_id": "16ddf419cff9"
+    }
+  ],
+  "existing_fp16_cuda_regression": {
+    "tests": 1,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "junit_sha256": "2e2bd673b2c98f2a1ac03187b9e6d7f041811d4478f77375391aaeef284a3158",
+    "result": "passed",
+    "test_file": "tests/test_gptq_pro.py",
+    "queue_job_id": "c562a5a3f7dc"
+  },
+  "basic_native_model_smoke": {
+    "status": "native_model_smoke_pass",
+    "loaded": true,
+    "runtime_precision_checked": true,
+    "scales_bitwise_verified": 30464,
+    "layer10_bf16_down_bitwise_verified": 256,
+    "group_counts": {
+      "32": 10496,
+      "64": 19968
+    },
+    "load_seconds": 67.436,
+    "placement": "layerwise-model-parallel-two-device",
+    "production_tensor_parallel_qualified": false,
+    "workload_qualified": false,
+    "mtp_qualified": false,
+    "vision_execution_qualified": false,
+    "long_context_qualified": false,
+    "snapshot_sha256": "3d9b0e1a1ae53ddda82f5058d51dba4d6795981be69acb446ff64a1418d0688a",
+    "artifact_sha256": "59babf4b57df6a4069599ee71129219c2187c6edb823b66cc4e44d07485df998",
+    "runtime_code_sha256": "d4952ca485de22a0197a6a75afebfbf1535a00e5b86c97a771e555afeba12d65",
+    "probe_source_sha256": "1a7656de10b67b9bcfb23e67f0667efb3eafc153f343a9bf42d063e59d867efd",
+    "chat_template_sha256": "c2aa7c3e2460e0041b6840e51f9bd8d8709b0da91f18d54502f5f7f08ff99983",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "devices": [
+      {
+        "name": "NVIDIA GeForce RTX 3090",
+        "peak_allocated_bytes": 11973853696
+      },
+      {
+        "name": "NVIDIA GeForce RTX 3090",
+        "peak_allocated_bytes": 12327572992
+      }
+    ],
+    "seconds": 85.074,
+    "raw_report_sha256": "f946f44c0f47e1ee3903e9350a5623dc40b66b8bfb1d4505d26a46914d66c745",
+    "queue_job_id": "626c658838d2",
+    "answers": [
+      {
+        "expected": "ready",
+        "output": "ready",
+        "passed": true,
+        "new_tokens": 2,
+        "seconds": 1.743
+      },
+      {
+        "expected": "4",
+        "output": "4",
+        "passed": true,
+        "new_tokens": 2,
+        "seconds": 1.131
+      }
+    ]
+  },
+  "bounded_functional_candidate": {
+    "status": "native_model_loaded_quality_failed",
+    "loaded": true,
+    "runtime_precision_checked": true,
+    "scales_bitwise_verified": 30464,
+    "layer10_bf16_down_bitwise_verified": 256,
+    "group_counts": {
+      "32": 10496,
+      "64": 19968
+    },
+    "load_seconds": 69.885,
+    "profile": "heldout-functional-v1",
+    "case_profile_sha256": "c8ef4139f8adbe14c7cdc8f5e5d9e18672330004ad868627d912817cbd8aff9c",
+    "functional_suite_passed": false,
+    "placement": "layerwise-model-parallel-two-device",
+    "production_tensor_parallel_qualified": false,
+    "workload_qualified": false,
+    "mtp_qualified": false,
+    "vision_execution_qualified": false,
+    "long_context_qualified": false,
+    "snapshot_sha256": "3d9b0e1a1ae53ddda82f5058d51dba4d6795981be69acb446ff64a1418d0688a",
+    "artifact_sha256": "59babf4b57df6a4069599ee71129219c2187c6edb823b66cc4e44d07485df998",
+    "runtime_code_sha256": "d4952ca485de22a0197a6a75afebfbf1535a00e5b86c97a771e555afeba12d65",
+    "probe_source_sha256": "3a537748627eff1a8b6e838aaac6b640ffd0cc6e59ada941163200f9a1dad51d",
+    "chat_template_sha256": "c2aa7c3e2460e0041b6840e51f9bd8d8709b0da91f18d54502f5f7f08ff99983",
+    "extension_sha256": "c1ef8d0d842d04ffce40f721e6229ac68128e4bd9b07ca63a5c0c4cf0e994889",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "devices": [
+      {
+        "name": "NVIDIA GeForce RTX 3090",
+        "peak_allocated_bytes": 13787298816
+      },
+      {
+        "name": "NVIDIA GeForce RTX 3090",
+        "peak_allocated_bytes": 14313206784
+      }
+    ],
+    "seconds": 112.002,
+    "raw_report_sha256": "0edccf2e094537755c7d15dd8f945a1e1f5e2ce01d7203702838261f0ef84741",
+    "queue_job_id": "05eec7ff2951",
+    "answers": [
+      {
+        "name": "integer_arithmetic",
+        "validator": "exact",
+        "expected": "3915",
+        "output": "3933",
+        "passed": false,
+        "input_tokens": 33,
+        "new_tokens": 5,
+        "seconds": 2.839
+      },
+      {
+        "name": "spanish_unicode",
+        "validator": "exact",
+        "expected": "Ñandú, mañana, lluvia.",
+        "output": "Ñandú, mañana, lluvia.",
+        "passed": true,
+        "input_tokens": 35,
+        "new_tokens": 9,
+        "seconds": 3.436
+      },
+      {
+        "name": "json_list_statistics",
+        "validator": "json",
+        "expected": {
+          "total": 22,
+          "unique": 3
+        },
+        "output": "{\"total\": 22, \"unique\": 3}",
+        "passed": true,
+        "input_tokens": 53,
+        "new_tokens": 14,
+        "seconds": 5.309
+      },
+      {
+        "name": "json_sorting",
+        "validator": "json",
+        "expected": [
+          -4,
+          0,
+          2,
+          9,
+          9
+        ],
+        "output": "[-4, 0, 2, 9, 9]",
+        "passed": true,
+        "input_tokens": 43,
+        "new_tokens": 16,
+        "seconds": 5.859
+      },
+      {
+        "name": "exact_instruction",
+        "validator": "exact",
+        "expected": "BLUE",
+        "output": "BLUE",
+        "passed": true,
+        "input_tokens": 27,
+        "new_tokens": 2,
+        "seconds": 1.174
+      },
+      {
+        "name": "context_8192_needle",
+        "validator": "exact",
+        "expected": "AUCK-738291",
+        "output": "AUCK-738291",
+        "passed": true,
+        "input_tokens": 7622,
+        "new_tokens": 10,
+        "seconds": 7.593
+      }
+    ],
+    "cases_passed": 5,
+    "cases_total": 6
+  },
+  "bounded_bf16_reference": {
+    "status": "source_bf16_cases_completed_report_recovered",
+    "source_reference_only": true,
+    "functional_suite_passed": false,
+    "runtime_code_sha256": "d4952ca485de22a0197a6a75afebfbf1535a00e5b86c97a771e555afeba12d65",
+    "case_profile_sha256": "c8ef4139f8adbe14c7cdc8f5e5d9e18672330004ad868627d912817cbd8aff9c",
+    "source_index_sha256": "ec786610e2a5c5ad8da06f5e15d78415524fc4ac3e829cf9711b2d89cfa43d37",
+    "source_config_sha256": "7ab8b108884cf4e5274b874e09ff30951e24d55cc8c6b33b8c1209edba5279dd",
+    "chat_template_sha256": "c2aa7c3e2460e0041b6840e51f9bd8d8709b0da91f18d54502f5f7f08ff99983",
+    "placement": "single-device-layerwise-with-cpu-offload",
+    "max_memory_per_gpu": "18GiB",
+    "model_quantized": false,
+    "reference_script_sha256": "951e194191f7d35cce19fa43c19758d441fedc429d2c4d52fbb333573860f63a",
+    "report_recovered_from_queue_log": true,
+    "queue_exit_code": 1,
+    "queue_process_passed": false,
+    "reporting_failure": "Six per-case events completed; final metadata JSON serialization failed on a set. The queue job remains failed.",
+    "evidence_origin": "Per-case records extracted from the retained queue log; loading and final pin assertions inferred from the success-report control flow that reached the serialization error.",
+    "queue_log_sha256": "aa2396922b9496a80dcbe0ef6fc28cca7714e6932a58fe853e0ea2630c7ce55d",
+    "source_metadata_recorded_after_run": true,
+    "loading_checks_inferred_from_control_flow": {
+      "missing_keys_empty": true,
+      "mismatched_keys_empty": true,
+      "error_msgs_empty": true,
+      "unexpected_keys_restricted_to_mtp": true,
+      "all_parameter_dtypes_bf16": true,
+      "no_quantized_weights": true,
+      "final_runtime_and_profile_pins_checked": true
+    },
+    "generation_case_seconds": 542.524,
+    "reconstructed_report_sha256": "4a0ca469dd985f22ea1b1a83047b3ce9f568c4094301744d3c9a0ab8a426eff2",
+    "queue_job_id": "cc690b7df271",
+    "answers": [
+      {
+        "name": "integer_arithmetic",
+        "expected": "3915",
+        "output": "3923",
+        "passed": false,
+        "input_tokens": 33,
+        "new_tokens": 5,
+        "seconds": 61.133,
+        "prompt_sha256": "161b440748e63c552b5a5cee3d5fd50fe31c2c4b5272b687237d9de52cb53255"
+      },
+      {
+        "name": "spanish_unicode",
+        "expected": "Ñandú, mañana, lluvia.",
+        "output": "Ñandú, mañana, lluvia.",
+        "passed": true,
+        "input_tokens": 35,
+        "new_tokens": 9,
+        "seconds": 85.193,
+        "prompt_sha256": "76c4ce03bb21dda4ab111bdb3d9afcd009c27739a71e3a888ba68a5b76b0d237"
+      },
+      {
+        "name": "json_list_statistics",
+        "expected": {
+          "total": 22,
+          "unique": 3
+        },
+        "output": "{\"total\": 22, \"unique\": 3}",
+        "passed": true,
+        "input_tokens": 53,
+        "new_tokens": 14,
+        "seconds": 132.477,
+        "prompt_sha256": "7764ec5c83c0389d454f98d9bc8d53d0cd4a90011a53d01e624433f727165633"
+      },
+      {
+        "name": "json_sorting",
+        "expected": [
+          -4,
+          0,
+          2,
+          9,
+          9
+        ],
+        "output": "[-4, 0, 2, 9, 9]",
+        "passed": true,
+        "input_tokens": 43,
+        "new_tokens": 16,
+        "seconds": 151.827,
+        "prompt_sha256": "527a661f15707350f1809ae84dfc27c8b26e5eb7c71ea08fb61a8abfe1f9875c"
+      },
+      {
+        "name": "exact_instruction",
+        "expected": "BLUE",
+        "output": "BLUE",
+        "passed": true,
+        "input_tokens": 27,
+        "new_tokens": 2,
+        "seconds": 19.025,
+        "prompt_sha256": "87d27b505a174e50dbbfae2ed61dea216d430abe53614f26985aac36509ca946"
+      },
+      {
+        "name": "context_8192_needle",
+        "expected": "AUCK-738291",
+        "output": "AUCK-738291",
+        "passed": true,
+        "input_tokens": 7622,
+        "new_tokens": 10,
+        "seconds": 92.869,
+        "prompt_sha256": "32bcae74812ff36246342f4f7e0b8f596b8725a56d21f595410ba6a965f902b1"
+      }
+    ],
+    "cases_passed": 5,
+    "cases_total": 6
+  },
+  "matched_case_comparison": [
+    {
+      "name": "integer_arithmetic",
+      "candidate_passed": false,
+      "bf16_reference_passed": false,
+      "same_output": false,
+      "input_tokens": 33
+    },
+    {
+      "name": "spanish_unicode",
+      "candidate_passed": true,
+      "bf16_reference_passed": true,
+      "same_output": true,
+      "input_tokens": 35
+    },
+    {
+      "name": "json_list_statistics",
+      "candidate_passed": true,
+      "bf16_reference_passed": true,
+      "same_output": true,
+      "input_tokens": 53
+    },
+    {
+      "name": "json_sorting",
+      "candidate_passed": true,
+      "bf16_reference_passed": true,
+      "same_output": true,
+      "input_tokens": 43
+    },
+    {
+      "name": "exact_instruction",
+      "candidate_passed": true,
+      "bf16_reference_passed": true,
+      "same_output": true,
+      "input_tokens": 27
+    },
+    {
+      "name": "context_8192_needle",
+      "candidate_passed": true,
+      "bf16_reference_passed": true,
+      "same_output": true,
+      "input_tokens": 7622
+    }
+  ],
+  "historical_diagnostics": [
+    {
+      "queue_job_id": "38a1d2a02b80",
+      "result": "SIGTERM during saving after all 30464 projections completed",
+      "cause": "Not definitively established"
+    },
+    {
+      "queue_job_id": "91d6bca27981",
+      "result": "Initial full native load OOM",
+      "cause": "Relative-template policy prefilter erased expert replacements; full-name selection and exact inventory guard now validated"
+    },
+    {
+      "queue_job_id": "8d0601ee40d4",
+      "result": "BF16 diagnostic setup failed before weight loading",
+      "cause": "Existing GPTQModel.load forwarded internal profile into Transformers; reference rerun directly through Transformers"
+    }
+  ],
+  "reference_reporting_failure": {
+    "queue_job_id": "cc690b7df271",
+    "queue_exit_code": 1,
+    "cases_completed": 6,
+    "report_recovered_from_queue_log": true,
+    "cause": "Metadata set was not JSON serializable; six flushed case events retained"
+  },
+  "qualification": {
+    "recovered_structure_checked": true,
+    "native_full_reload_and_precision_checked": true,
+    "bounded_functional_suite_passed": false,
+    "representative_task_quality_qualified": false,
+    "automatic_consumer_registry_admitted": false,
+    "vllm_fused_moe_qualified": false,
+    "production_distributed_tp2_qualified": false,
+    "context_250k_qualified": false,
+    "kv_cache_8bit_qualified": false,
+    "mtp_decoding_qualified": false,
+    "vision_execution_qualified": false,
+    "source_deletion_allowed": false
+  },
+  "interpretation": "Six deterministic functional cases are a diagnostic smoke, not a representative benchmark or deployment qualification. Expected outputs were pinned before execution. The failed candidate arithmetic case remains failed irrespective of the reference outcome."
+}

@@ -14,11 +14,15 @@ represent those assignments. Consumer admission therefore fails before a full
 build or runtime GPU admission.
 
 The native unfused GPTQ-Pro path can express different per-projection groups,
-but its kernel returns FP16. A BF16-preserved layer-10 down projection therefore
-needs an explicitly qualified precision boundary. Loading the entire model as
-FP16 would change this recipe and cannot qualify BF16 preservation.
+and now has an explicit BF16 activation boundary around its FP16 kernel.
+Representative GPU fixtures and a full recovered model reload verify this
+boundary while keeping scales FP16. Loading the entire model as FP16 would
+change this recipe and cannot qualify BF16 preservation.
 
-There is currently no qualified consumer for this exact recipe in the registry.
+The campaign's automatic consumer registry still fails closed; its configured
+vLLM consumer remains unsupported. A separate, explicitly admitted native load
+path is exercised by `native_model_probe.py` and documented in
+[GPU qualification notes](qwen36-native-qualification.md).
 An evidence JSON, CPU fixture, successful quantization, tensor name count, or
 two correct short answers cannot grant backend support. A reviewed backend
 implementation and actual saved-fixture reload/execution evidence are required.
@@ -167,5 +171,6 @@ remains the base.
    failure-replay tasks, tools, MTP and required context lengths as separate gates.
 5. Bind all evidence to the artifact and inputs before any promotion.
 
-No new full checkpoint or backend qualification report is produced by the CPU
-repair suite.
+The CPU repair suite itself does not qualify a full checkpoint. The subsequent
+native GPU tests and interrupted-export recovery have separate evidence and
+explicit scope in the GPU qualification notes.
