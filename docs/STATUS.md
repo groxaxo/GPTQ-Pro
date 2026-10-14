@@ -103,6 +103,26 @@ Its case records were recovered from logs; its process remains failed. These are
 neither the nine-case OpenCode failure-replay scores nor a Sharp/xhigh benchmark.
 No nine-case score can be inferred from this evidence.
 
+
+## Optional scale-refinement release
+
+The [refinement toolkit](QUALITY_REFINEMENT.md) is available for checksum-bound
+captured blocks and sequential batches. Public commands default to scale-only;
+learned rounding requires `--joint-rounding`. The quantization factories and
+full-model deployment defaults are unchanged. Coverage ledgers, response-token
+KL/NLL metrics and consumer-constrained allocation are available as separate
+utilities, not evidence that all quality experiments have been performed.
+
+The first-block pilot reported 2.93% and 3.44% lower heldout expert-output NMSE
+for two scale-only candidates at unchanged packed bytes. Those candidates retained
+their integer codes. The earlier 24-case native CUDA result checks projection
+kernel parity, not whole-model accuracy. Fresh release checks and exact replay
+are recorded in [release verification](verification/quality-refinement-release-20261015.json).
+The Heretic model's full workload/deployment qualification remains unchanged.
+
+The CSV writer now preserves sample counts and their solver/unit fields. Do not
+reinterpret old malformed CSV rows as correct; use the original structured JSON.
+
 ## Known blockers and required follow-up
 
 ### B1. Heretic external consumer and automatic admission

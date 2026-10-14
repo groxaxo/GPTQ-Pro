@@ -44,6 +44,7 @@ examples are not additional inference backends bundled by this fork.
 | --- | --- |
 | Native INT4 decode, Tensor Core prefill and shape fallback | [Ampere V3 kernel](docs/KERNEL_V3.md) |
 | Default quality recipe and scoped comparison evidence | [Validated quality default](docs/VALIDATED_QUALITY_DEFAULT.md) |
+| Opt-in packed-block refinement, coverage and measured allocation | [Experimental quality toolkit and first-block pilot](docs/QUALITY_REFINEMENT.md) |
 | Strict numerics, effective solver reporting and fail-closed OOM policy | [Numerical integrity](docs/QUALITY_NUMERICS.md) |
 | Architecture, packing and source-precision safeguards | [Model routing](docs/QWEN35_QWEN36.md) and [storage contract](docs/STORAGE_NUMERICAL_CONTRACT.md) |
 | Selective Heretic export recovery and native loading | [Native qualification](docs/qwen36-native-qualification.md) |

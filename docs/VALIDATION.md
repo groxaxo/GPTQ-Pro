@@ -20,7 +20,8 @@ directory for each run. Hide CUDA and use offline model settings for CPU checks.
 ## CPU campaign regression suite
 
 The versioned [CPU runner](../scripts/test_qwen36_campaign_cpu.py) executes the
-current numerical/architecture baseline plus all `tests/test_qwen36_*.py` files.
+current numerical/architecture baseline, all `tests/test_qwen36_*.py` files,
+the four quality-toolkit regression files and the nightly/benchmark helper tests.
 It controls thread counts, hides CUDA, disables automatic pytest plugin loading,
 sets per-test/process timeouts and writes its logs and JUnit XML.
 
@@ -84,6 +85,7 @@ Use the owning procedure for each gate:
 | --- | --- |
 | Kernel arithmetic and shape checks | [V3 kernel](KERNEL_V3.md#validation) |
 | Existing-binary identity and actual-activation probes | [Pinned V3](PINNED_V3_VALIDATION.md) |
+| Optional scale-refinement captures, batch plans and fixture parity | [Refinement toolkit](QUALITY_REFINEMENT.md) |
 | Campaign source, policy, pilot and consumer binding | [Heretic safety](qwen36-campaign-safety.md) |
 | Recovered export and native mixed-precision execution | [Heretic native qualification](qwen36-native-qualification.md) |
 | Dense Qwen3.8 build and strict benchmark | [Qwen3.8](QWEN38.md), subject to its documented blockers |

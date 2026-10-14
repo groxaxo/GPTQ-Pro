@@ -34,6 +34,7 @@ It is **not** the independent layer-chunk assembly described in the Qwen3.8 guid
 | Topic | Reference |
 | --- | --- |
 | Current recipe defaults and bounded quality evidence | [Validated quality default](VALIDATED_QUALITY_DEFAULT.md) |
+| Opt-in scale refinement, checked batch plans and measured allocation | [Quality refinement](QUALITY_REFINEMENT.md) |
 | Strict checks, OOM handling and effective solver features | [Numerical integrity](QUALITY_NUMERICS.md) |
 | Packing, storage round trips and reference error metrics | [Storage and numerical contract](STORAGE_NUMERICAL_CONTRACT.md) |
 | Trusted prebuilt binary selection and GPU probes | [Pinned V3 validation](PINNED_V3_VALIDATION.md) |
@@ -51,6 +52,7 @@ job status. Do not add overlapping test counts or transfer a result between mode
 | [Storage contract, 7 October 2026](verification/storage-contract-20261007.json) | Earlier CPU/storage stage, not a GPU qualification report. |
 | [Pinned V3, 7 October 2026](verification/pinned-v3-20261007.json) | Specific existing binary, synthetic shapes and two real source linears. |
 | [Campaign CPU regressions, 14 October 2026](verification/qwen36-campaign-cpu-20261014.json) | Software safety tests, not generated model answers. |
+| [Refinement release, 15 October 2026](verification/quality-refinement-release-20261015.json) | Fresh CPU checks and exact replay; earlier 24-case native CUDA evidence remains separately scoped. |
 | [Native Heretic recovery, 14 October 2026](verification/qwen36-native-qualification-20261014.json) | Recovered artifact, fixture/native reload results, functional failure and unresolved release gates. |
 | [Audit index](audits/README.md) and [14 October audit](audits/2026-10-14/README.md) | Historical diagnosis of the exact audited campaign; later implementation does not rewrite its observations. |
 
