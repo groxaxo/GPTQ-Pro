@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "prepared_at": "2026-10-14T21:42:59.472218+13:00",
+  "base_commit": "4cce36fc82d75fccf2baf40076fb23a8ba71b125",
+  "scope": "Local CPU-only verification of documentation and diagnostic evidence; no model qualification.",
+  "github_actions_used": false,
+  "production_code_changed": false,
+  "checks": [
+    {
+      "name": "portable_replay_syntax",
+      "passed": true
+    },
+    {
+      "name": "replay_help",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "replay_missing_source_rejected",
+      "passed": true,
+      "exit_code": 2
+    },
+    {
+      "name": "portable_replay_against_pinned_campaign",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "all_eight_historical_behaviours_reproduced",
+      "passed": true,
+      "confirmed": 8
+    },
+    {
+      "name": "replay_matches_published_observations",
+      "passed": true
+    },
+    {
+      "name": "existing_evidence_overwrite_rejected",
+      "passed": true,
+      "exit_code": 2
+    },
+    {
+      "name": "production_output_path_rejected",
+      "passed": true,
+      "exit_code": 2
+    },
+    {
+      "name": "changed_campaign_hash_rejected_before_execution",
+      "passed": true
+    },
+    {
+      "name": "publication_main_regressions",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "main_selected_suite_312_passed",
+      "passed": true,
+      "tests": 312,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "original_campaign_source_unchanged",
+      "passed": true
+    },
+    {
+      "name": "nine_findings_preserved",
+      "passed": true
+    },
+    {
+      "name": "explicit_no_fixes_claim",
+      "passed": true
+    },
+    {
+      "name": "public_files_privacy_and_json_check",
+      "passed": true,
+      "files": 10
+    },
+    {
+      "name": "audit_markdown_links_resolve",
+      "passed": true
+    },
+    {
+      "name": "publication_diff_whitespace",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "portable_replay_ruff_check",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "portable_replay_ruff_format",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "final_staged_publication_diff_whitespace",
+      "passed": true,
+      "exit_code": 0
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+[
+  {
+    "case": "validator_exit_0",
+    "reproduced": true,
+    "exit_code": 0,
+    "original_status": "passed",
+    "final_status": "validation_failed",
+    "reported_error": "0"
+  },
+  {
+    "case": "validator_exit_4",
+    "reproduced": true,
+    "exit_code": 4,
+    "original_status": "not_ready",
+    "final_status": "validation_failed",
+    "reported_error": "4"
+  },
+  {
+    "case": "validator_exit_5",
+    "reproduced": true,
+    "exit_code": 5,
+    "original_status": "blocked_runtime_resources",
+    "final_status": "validation_failed",
+    "reported_error": "5"
+  },
+  {
+    "case": "false_positive_wrong_arithmetic",
+    "reproduced": true,
+    "responses": [
+      "version 4",
+      "5"
+    ],
+    "exit_code": 0,
+    "events": [
+      "runtime_start",
+      "runtime_outputs",
+      "runtime_smoke_pass"
+    ]
+  },
+  {
+    "case": "quality_exit_code_reclassified",
+    "reproduced": true,
+    "responses": [
+      "ready",
+      "5"
+    ],
+    "exit_code": 2,
+    "events": [
+      "runtime_start",
+      "runtime_outputs",
+      "quality_smoke_warning",
+      "runtime_failure"
+    ]
+  },
+  {
+    "case": "malformed_checkpoint_structure_accepted",
+    "reproduced": true,
+    "return_code": 5,
+    "structure": {
+      "status": "structure_checked",
+      "checkpoint": "<temporary-invalid-checkpoint>/output",
+      "shards": 1,
+      "bytes": 17464,
+      "quant_base_bits": 8,
+      "quant_base_group": 999,
+      "mixed_group_size": true,
+      "tensors": {
+        "mtp": 19,
+        "vision": 200,
+        "qweights": 1,
+        "scales": 0,
+        "tensors": 220
+      },
+      "index": false,
+      "runtime_note": "vLLM fused MoE may not support g64 gate/up with g32 down; smoke execution is required."
+    },
+    "runtime_status": {
+      "status": "blocked_runtime_resources",
+      "error": "Expected two allocated CUDA GPUs, got 0"
+    },
+    "scope": "structural gate only; no GPU runtime was attempted"
+  },
+  {
+    "case": "optimized_python_removes_source_gates",
+    "reproduced": true,
+    "result": {
+      "vision": 0,
+      "mtp": 0,
+      "shards": 1,
+      "tensors": 1
+    }
+  },
+  {
+    "case": "native_spill_rejects_sparse_global_batch_indices",
+    "reproduced": true,
+    "error": "Native input order mismatch: 2 != 0",
+    "scope": "conditional: routed experts with skipped batches; current quality_4bit job has GPTAQ disabled"
+  }
+]

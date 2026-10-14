@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-14",
+  "implementation_fixed": false,
+  "findings": [
+    {
+      "id": "F01",
+      "priority": "P1",
+      "title": "Engine/version drift",
+      "scope": "active engine versus main",
+      "evidence_class": "confirmed_source_and_config_drift",
+      "acceptance": "Pin a new main-based integration tree; port spill changes with tests; record resolved policy and complete source identity."
+    },
+    {
+      "id": "F02",
+      "priority": "P1",
+      "title": "Per-projection MoE policy versus fused loader",
+      "scope": "campaign and installed vLLM",
+      "evidence_class": "source_level_mismatch_full_load_not_attempted",
+      "acceptance": "Save and load a representative ordinary/special MoE fixture using the exact consumer, dtype and tensor parallelism."
+    },
+    {
+      "id": "F03",
+      "priority": "P1",
+      "title": "Malformed checkpoint accepted by structural gate",
+      "scope": "campaign verifier",
+      "evidence_class": "reproduced_synthetic_fixture",
+      "acceptance": "Reject missing or malformed tensors, group/dtype mismatches and preservation/index violations before GPU admission."
+    },
+    {
+      "id": "F04",
+      "priority": "P1",
+      "title": "Successful exit overwrites status as failure",
+      "scope": "campaign verifier entrypoint",
+      "evidence_class": "reproduced_exit_codes_0_4_5",
+      "acceptance": "Normal exit never rewrites passed, not-ready or blocked status; JSON and process outcomes agree."
+    },
+    {
+      "id": "F05",
+      "priority": "P1",
+      "title": "False-positive answer smoke and conflated errors",
+      "scope": "campaign inference probe",
+      "evidence_class": "reproduced_mock_provider",
+      "acceptance": "Validate answers per prompt; distinguish load errors, wrong answers and workload qualification."
+    },
+    {
+      "id": "F06",
+      "priority": "P2",
+      "title": "Weak unbound pilot approval",
+      "scope": "campaign admission",
+      "evidence_class": "confirmed_gate_design_gap",
+      "acceptance": "Bind pilot to code/source/calibration/policy and qualify export/load including the unique layer-10 case."
+    },
+    {
+      "id": "F07",
+      "priority": "P2",
+      "title": "Required assertions disappear under optimization",
+      "scope": "campaign source preflight",
+      "evidence_class": "reproduced_optimized_actual_function",
+      "acceptance": "Normal and optimized Python reject identical invalid source fixtures using explicit exceptions."
+    },
+    {
+      "id": "F08",
+      "priority": "P2",
+      "title": "Incomplete abort and retry state",
+      "scope": "campaign resource and state handling",
+      "evidence_class": "source_review_no_production_abort_induced",
+      "acceptance": "Fault-inject failures; preserve terminal state; provide isolated retries or sequentially valid resume without overwriting artifacts."
+    },
+    {
+      "id": "F09",
+      "priority": "P2",
+      "title": "Dense batch numbering in sparse native spill",
+      "scope": "campaign-local spill module",
+      "evidence_class": "reproduced_api_limitation_conditional_gptaq_moe",
+      "acceptance": "Validate sparse native/replay alignment or reject unsupported combinations; current campaign has GPTAQ disabled."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "scope": "Original campaign files; hashes refer to unsanitized originals.",
+  "recorded_at": "2026-10-14T19:58:05.618576+13:00",
+  "files": {
+    "engine/gptqmodel/utils/activation_spill.py": "68c56194ce256f250d1d7d11d967b1ae4a0c76689e90db588147a2f6e0081be1",
+    "engine/gptqmodel/quantization/config.py": "68d8d494ad57a455a0cb93361b88629e3d3b72c480baa7bcf7e0f7719c620011",
+    "engine/gptqmodel/quantization/gptaq.py": "112f9c524a1c25ab8a5bec8becfd39064d926f28b6ebbc9367cbeb943d006ef2",
+    "engine/gptqmodel/quantization/gptq.py": "bef545ae4b0383f16ff8e0a2396e7011bd335ac40db5ce891703e6208aac84ce",
+    "run_quant.py": "ab6e6ab180de0c13b50e241537f0268d7b75340ae9732e295b33d408f06c42e9",
+    "verify_after.py": "7789ce7fbb858c95c57c6bf6e602a9b116323298c6fbd551dfcdb7cacdcf54ab",
+    "vllm_probe.py": "a046636318f23e737e930f055c16b97f78ebb0c8edf627815a47655af3ef5a18",
+    "policy.py": "fc4e773e5671911cddb88d0be3c67c6675c0020c7ca2c9a8e3fae2db467b649b"
+  },
+  "replay_required_files": [
+    "run_quant.py",
+    "verify_after.py",
+    "vllm_probe.py",
+    "engine/gptqmodel/utils/activation_spill.py"
+  ]
+}
