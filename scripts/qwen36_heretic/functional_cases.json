@@ -1,0 +1,49 @@
+[
+  {
+    "name": "integer_arithmetic",
+    "request": "Calculate 137 * 29 - 58. Reply using only the integer result.",
+    "expected": "3915",
+    "validator": "exact"
+  },
+  {
+    "name": "spanish_unicode",
+    "request": "Repetí exactamente esta frase y nada más, sin comillas: Ñandú, mañana, lluvia.",
+    "expected": "Ñandú, mañana, lluvia.",
+    "validator": "exact"
+  },
+  {
+    "name": "json_list_statistics",
+    "request": "For the integers [10, -2, 7, 7], return only valid JSON with keys total (their sum) and unique (the number of distinct values). Do not use Markdown.",
+    "expected": {
+      "total": 22,
+      "unique": 3
+    },
+    "validator": "json"
+  },
+  {
+    "name": "json_sorting",
+    "request": "Sort the numbers [9, -4, 0, 9, 2] in ascending order. Return only the JSON array, without Markdown.",
+    "expected": [
+      -4,
+      0,
+      2,
+      9,
+      9
+    ],
+    "validator": "json"
+  },
+  {
+    "name": "exact_instruction",
+    "request": "Reply with exactly the uppercase English word BLUE. Include no punctuation or explanation.",
+    "expected": "BLUE",
+    "validator": "exact"
+  },
+  {
+    "name": "context_8192_needle",
+    "request": "What is the exact SECRET_TOKEN from the document? Reply only with its value, without quotes or explanation.",
+    "needle": "SECRET_TOKEN = AUCK-738291",
+    "context_filler_tokens": 8192,
+    "expected": "AUCK-738291",
+    "validator": "exact"
+  }
+]

@@ -551,7 +551,7 @@ def ModelLoader(cls):
         format_code = resolve_quant_format(qcfg.format, qcfg.method)
         backend = normalize_backend(backend)
 
-        if backend == BACKEND.GPTQ_PRO:
+        if backend == BACKEND.GPTQ_PRO and dtype != torch.bfloat16:
             log.info("Loading Quantized Model: Auto fix `dtype` to `torch.float16`")
             dtype = torch.float16
 
@@ -632,7 +632,10 @@ def ModelLoader(cls):
             modules = find_modules(model)
             ignore_modules = [cls.lm_head] + cls.get_base_modules(model)
 
-            simple_layer_modules = cls.simple_layer_modules(config, qcfg)
+            # Saved policies match fully qualified module paths. Applying them
+            # to relative templates here can erase every routed expert.
+            # make_quant applies the policy to the actual full module names.
+            simple_layer_modules = cls.full_layer_modules(config)
             for name in list(modules.keys()):
                 # allow loading of quantized lm_head
                 if qcfg.lm_head and name == cls.lm_head:
@@ -863,12 +866,15 @@ def ModelLoader(cls):
             log.info(f"Loader: honoring explicit device_map request: {device_map}")
         log.info(f"Loader: device_map = {device_map}")
 
+        from ..utils.gptq_pro import checkpoint_dtype_for_kernel, validate_native_module_inventory
+        validate_native_module_inventory(model, model_save_name, preload_qlinear_kernel)
+        checkpoint_dtype = checkpoint_dtype_for_kernel(preload_qlinear_kernel, dtype)
         load_checkpoint_in_model = True
         # compat: runtime convert checkpoint gptq(v1) to gptq_v2 format
         if format_code in [FORMAT.GPTQ, FORMAT.GPTQ_V2]:
             load_checkpoint_in_model_then_tie_weights(
                 model,
-                dtype=dtype,
+                dtype=checkpoint_dtype,
                 # This is very hacky but works due to https://github.com/huggingface/accelerate/blob/bd72a5f1a80d5146554458823f8aeda0a9db5297/src/accelerate/utils/modeling.py#L292
                 checkpoint=model_save_name,
                 device_map=device_map,
@@ -897,7 +903,7 @@ def ModelLoader(cls):
         if load_checkpoint_in_model:
             load_checkpoint_in_model_then_tie_weights(
                 model,
-                dtype=dtype,
+                dtype=checkpoint_dtype,
                 # This is very hacky but works due to https://github.com/huggingface/accelerate/blob/bd72a5f1a80d5146554458823f8aeda0a9db5297/src/accelerate/utils/modeling.py#L292
                 checkpoint=model_save_name,
                 device_map=device_map,

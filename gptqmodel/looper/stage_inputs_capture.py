@@ -15,12 +15,14 @@ import torch
 from .. import DEVICE_THREAD_POOL
 from ..looper.input_cache import InputCache
 from ..nn_modules.hooked_linear import STOP_FORWARD_EXCEPTION, StopForward
+from ..utils.activation_spill import layer_cache_list, validate_layer_spill_placement
 from ..utils.ctx import ctx
 from ..utils.device import get_device
-from ..utils.looper_helpers import device_ctx, select_forward_devices
 from ..utils.logger import setup_logger
+from ..utils.looper_helpers import device_ctx, select_forward_devices
 from ..utils.model import get_module_by_name_prefix, move_to, nested_move_to
 from ..utils.torch import CPU, META
+
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .module_looper import ModuleLooper
@@ -44,7 +46,8 @@ class StageInputsCapture:
     ) -> InputCache:
         """Runs a short forward over calibration data and caches first-layer inputs."""
 
-        layer_inputs: List[List[torch.Tensor]] = []
+        validate_layer_spill_placement(self.gptq_model.quantize_config.calibration_data_device)
+        layer_inputs: List[List[torch.Tensor]] = layer_cache_list()
         attention_masks: List[torch.Tensor | None] = []
         position_ids: List[torch.Tensor] = []
         layer_input_kwargs: List[Dict[str, Any]] = []
@@ -109,6 +112,9 @@ class StageInputsCapture:
         else:
             data_device = cur_layer_device
 
+        # Capture placement must not change when the forward input device changes.
+        cache_device = data_device
+
         # Round-robin counter for balanced mode
         balanced_rr_counter = [0]  # Use list to allow modification in nested function
 
@@ -139,7 +145,7 @@ class StageInputsCapture:
                 batch_device = balanced_devices[balanced_rr_counter[0] % len(balanced_devices)]
                 balanced_rr_counter[0] += 1
             else:
-                batch_device = data_device
+                batch_device = cache_device
 
             layer_input = self.gptq_model.capture_first_layer_positional_inputs(
                 args=args,
@@ -172,7 +178,7 @@ class StageInputsCapture:
             # In normal repeating layer/sbuset early stop happens on the last module forward
             # but the first model input embedding call we use a simple model register forwar hook
             # and wait for the first instance this callback is called
-            raise STOP_FORWARD_EXCEPTION
+            raise STOP_FORWARD_EXCEPTION.with_traceback(None)
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         for module_name in self.gptq_model.get_base_modules(self.gptq_model.model):
@@ -214,8 +220,9 @@ class StageInputsCapture:
                             use_cache=use_cache,
                             data_device=data_device,
                         )
-                except StopForward:
-                    pass
+                except StopForward as exc:
+                    # A shared sentinel otherwise retains activation-owning frames.
+                    exc.__traceback__ = None
                 finally:
                     processed_batches = batch_index
                     if cache_forward_pb is not None:
@@ -233,11 +240,12 @@ class StageInputsCapture:
                             subtitle += f" rows {processed_rows}"
                         cache_forward_pb.subtitle(subtitle).draw()
         finally:
-            if cache_forward_pb is not None:
-                cache_forward_pb.close()
-
-        self.gptq_model.pre_quantize_generate_hook_end()
-        handle.remove()
+            try:
+                if cache_forward_pb is not None:
+                    cache_forward_pb.close()
+                self.gptq_model.pre_quantize_generate_hook_end()
+            finally:
+                handle.remove()
 
         result = InputCache(
             layer_inputs=layer_inputs,

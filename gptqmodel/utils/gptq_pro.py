@@ -18,6 +18,7 @@ from .env import env_flag
 from .logger import setup_logger
 from .rocm import IS_ROCM
 
+
 log = setup_logger()
 
 _GPTQ_PRO_EXTENSION_NAME = "gptqmodel_gptq_pro_kernels_v3"
@@ -136,6 +137,51 @@ def ensure_gptq_pro_loaded(*, verbose: bool | None = None):
             gptq_pro_import_exception = " | ".join(errors)
             _GPTQ_PRO_INITIALISED = True
             raise ImportError(gptq_pro_import_exception) from exc
+
+
+def validate_native_module_inventory(model, checkpoint, kernel):
+    """Reject missing/extraneous native replacements before loading or dispatch.
+
+    A filtered-out expert otherwise retains its uninitialized BF16 weight while
+    packed checkpoint keys are ignored, causing an OOM or incorrect inference.
+    """
+    if not getattr(kernel, "PRESERVES_BF16_ACTIVATIONS", False):
+        return None
+    import json
+
+    from safetensors import safe_open
+
+    checkpoint = Path(checkpoint)
+    if checkpoint.suffix == ".json":
+        index = json.loads(checkpoint.read_text())
+        mapping = index.get("weight_map")
+        if not isinstance(mapping, dict) or not mapping:
+            raise ValueError("Native checkpoint has no weight_map")
+        names = mapping.keys()
+    else:
+        with safe_open(str(checkpoint), framework="pt", device="cpu") as handle:
+            names = list(handle.keys())
+    expected = {name.removesuffix(".qweight") for name in names if name.endswith(".qweight")}
+    actual = {name for name, module in model.named_modules() if isinstance(module, kernel)}
+    if not expected or actual != expected:
+        missing = sorted(expected - actual)[:8]
+        extra = sorted(actual - expected)[:8]
+        raise ValueError(
+            f"Native quantized module inventory mismatch before weight loading: "
+            f"expected={len(expected)}, actual={len(actual)}, missing={missing}, extra={extra}"
+        )
+    return len(actual)
+
+
+def checkpoint_dtype_for_kernel(kernel, dtype):
+    """Preserve packed FP16 scales and source BF16 tensors on explicit BF16 loads.
+
+    Accelerate uses each registered tensor's dtype when dtype=None. A blanket
+    dtype=BF16 would round FP16 scale values and irreversibly change the model.
+    """
+    if dtype == torch.bfloat16 and getattr(kernel, "PRESERVES_BF16_ACTIVATIONS", False):
+        return None
+    return dtype
 
 
 def normalize_gptq_pro_kernel_mode(kernel_mode: str | None = None) -> str:

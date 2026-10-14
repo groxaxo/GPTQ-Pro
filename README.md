@@ -36,6 +36,8 @@ optimized around one path: **symmetric INT4 GPTQ on modern NVIDIA GPUs**. The
 Python distribution and import names remain `GPTQModel` and `gptqmodel` for API
 and checkpoint compatibility.
 
+For the Qwen3.6 Heretic campaign, see the [versioned safety gates](docs/qwen36-campaign-safety.md). The selective MoE recipe remains blocked until its exact consumer is qualified.
+
 ## Why GPTQ-Pro
 
 | Capability | What it provides |
@@ -55,7 +57,7 @@ and checkpoint compatibility.
 | Formats | `FORMAT.GPTQ`, `FORMAT.GPTQ_V2` |
 | Runtime selectors | `BACKEND.AUTO`, `BACKEND.GPTQ_PRO` |
 | GPU | Linux + NVIDIA CUDA, compute capability 8.0+ |
-| Activations | FP16; other input dtypes are converted to FP16 |
+| Activations | FP16 kernel; explicit BF16 loads preserve BF16 activation boundaries and protected weights |
 | Act order | `desc_act=False` only |
 | Packing | native `int32 qweight` |
 | Group sizes | `-1`, `16`, `32`, `64`, `128`, `256`, `512`, `1024` |
@@ -65,6 +67,11 @@ and checkpoint compatibility.
 ROCm, MPS, CPU inference, asymmetric weights, act-order checkpoints, native
 BF16 execution, compressed-tensors W8A16, FP8, AWQ, GGUF, and non-4-bit runtime
 paths are outside this fork's execution contract.
+
+An explicit native `dtype=torch.bfloat16` load keeps packed scales in FP16,
+runs quantized projections through the FP16 kernel, and converts their outputs
+back to BF16 before preserved modules. This is not native BF16 kernel execution.
+See the [Qwen3.6 GPU qualification notes](docs/qwen36-native-qualification.md).
 
 ## Quick start
 

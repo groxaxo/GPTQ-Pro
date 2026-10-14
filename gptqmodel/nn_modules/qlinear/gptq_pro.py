@@ -50,7 +50,10 @@ class GptqProQuantLinear(PackableQuantLinear):
     SUPPORTS_PACK_DTYPES = [torch.int32]
     SUPPORTS_ADAPTERS = [Lora]
 
-    SUPPORTS_DTYPES = [torch.float16]
+    # BF16 is an explicit activation boundary around an FP16 kernel, not a
+    # native BF16 kernel. Packed scales stay FP16 and protected modules BF16.
+    SUPPORTS_DTYPES = [torch.float16, torch.bfloat16]
+    PRESERVES_BF16_ACTIVATIONS = True
 
     REQUIRES_FORMAT_V2 = True
     QUANT_TYPE = "gptq_pro"
@@ -69,6 +72,7 @@ class GptqProQuantLinear(PackableQuantLinear):
         register_buffers: bool = True,
         **kwargs,
     ):
+        self.preserve_bf16_activations = kwargs.get("dtype") == torch.bfloat16
         super().__init__(
             bits=bits,
             group_size=group_size,
@@ -167,6 +171,8 @@ class GptqProQuantLinear(PackableQuantLinear):
 
         if not self.qweight.is_contiguous():
             self.qweight = self.qweight.contiguous()
+        if self.scales.dtype != torch.float16:
+            raise ValueError("GPTQ-Pro packed scales must remain FP16; refusing implicit scale conversion.")
         if not self.scales.is_contiguous():
             self.scales = self.scales.contiguous()
 
@@ -191,6 +197,7 @@ class GptqProQuantLinear(PackableQuantLinear):
                 x.shape[:-1] + (self.out_features,), dtype=x.dtype, device=x.device
             )
 
+        output_dtype = torch.bfloat16 if self.preserve_bf16_activations and x.dtype == torch.bfloat16 else torch.float16
         out_shape = x.shape[:-1] + (self.out_features,)
         x = x.reshape(-1, x.shape[-1])
         if x.shape[-1] != self.in_features:
@@ -215,7 +222,7 @@ class GptqProQuantLinear(PackableQuantLinear):
         if self.adapter:
             out = self.adapter.apply(x=x, out=out)
 
-        return out.reshape(out_shape)
+        return out.reshape(out_shape).to(output_dtype)
 
 
 __all__ = ["GptqProQuantLinear"]
