@@ -214,3 +214,23 @@ representative saved-model reload, independent BF16-reference language/task
 comparisons, native CUDA parity, and the actual deployment profile's reasoning,
 MTP, long-context and KV-cache gates. Feedback/GAR solver composition, output-side
 curvature, an all-g32 ablation, and a trellis-format backend remain separate work.
+
+## Recorded verification for this change
+
+The source at commit `b1b5b460` passed **611 CPU tests**: 88 new quality-toolkit
+regressions and 523 existing regressions, with no failures, errors or skips.
+The same suites passed again from the separate commit-pinned checkout. Lint,
+formatting, syntax and whitespace checks passed.
+
+Both saved scale-only expert candidates passed **24 native V3 CUDA parity
+cases** on a queue-admitted RTX 3090: gate/up/down projections at four batch
+shapes each. The prebuilt extension, capture, candidate and test code were
+checksum-pinned. This is isolated projection kernel parity, not a complete
+checkpoint reload, task benchmark or language-quality certification.
+
+The portable CLI replay reproduced the pilot tensors exactly. All six selected
+real candidates retained the same **1,755,136 packed tensor bytes per expert**
+and unchanged integer codes, zero points and group indices. Only scales changed.
+
+See [the machine-readable verification record](quality-refinement-results-20261015.json)
+for exact pilot metrics, test counts, source hashes and CUDA tolerances/results.
