@@ -12,11 +12,13 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-6d5cff?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2e9cff?style=flat-square"></a>
   <a href="docs/KERNEL_V3.md"><img alt="CUDA" src="https://img.shields.io/badge/CUDA-sm80%20%7C%20sm86%20%7C%20sm87-24ce8a?style=flat-square"></a>
-  <a href="docs/QWEN38.md"><img alt="Qwen 3.8" src="https://img.shields.io/badge/Qwen3.8--27B-supported-f19cff?style=flat-square"></a>
+  <a href="docs/STATUS.md"><img alt="Project status: experimental" src="https://img.shields.io/badge/status-experimental-f19cff?style=flat-square"></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#native-inference">Native inference</a> ·
+  <a href="#current-state">Current state</a> ·
   <a href="#qwen38-27b">Qwen3.8-27B</a> ·
   <a href="#runtime-contract">Runtime contract</a> ·
   <a href="docs/KERNEL_V3.md">Kernel design</a> ·
@@ -49,6 +51,37 @@ examples are not additional inference backends bundled by this fork.
 | Architecture, packing and source-precision safeguards | [Model routing](docs/QWEN35_QWEN36.md) and [storage contract](docs/STORAGE_NUMERICAL_CONTRACT.md) |
 | Selective Heretic export recovery and native loading | [Native qualification](docs/qwen36-native-qualification.md) |
 
+## Current state
+
+Reviewed **27 October 2026** against the published source. GPTQ-Pro ships one
+native inference backend, the Ampere-first V3 CUDA kernel, alongside GPTQ
+quantization and an opt-in quality-refinement toolkit. The package version is
+`6.1.0-dev`; the distribution/import names remain `GPTQModel` / `gptqmodel`.
+
+| Area | Current state |
+| --- | --- |
+| Recommended build recipe | `QuantizeConfig.quality_4bit()`: symmetric INT4 g64, GAR, activation-weighted MSE2, strict FP32 Hessian staging, no fallback/GPTAQ/FOEM by default. |
+| Native execution | Packed `int32` weights, fused small-batch decode, Tensor Core prefill and a compatible-shape fallback; no persistent second packed-weight copy. |
+| Optional second pass | Checksum-bound captures and sequential batches; scale-only by default, with learned rounding explicitly enabled by `--joint-rounding`. Full-model drivers do not apply this pass automatically. |
+| Model entry points | Dedicated Qwen dense, text and MoE drivers; support is specific to architecture and artifact. |
+| Open deployment gates | Heretic workload qualification and external fused-consumer compatibility; Qwen3.8 unattended builder/benchmark preset mismatch. |
+
+The latest versioned refinement-release record reports **650 CPU tests passing**
+on 15 October, with zero failures, errors or skips and exact replay of two saved
+expert candidates. Those are dated software/replay results, not a fresh test run
+or full-model deployment certificate.
+
+Measured results remain scoped to their original experiments:
+
+| Experiment | Recorded result | Scope |
+| --- | --- | --- |
+| [Default recipe](docs/VALIDATED_QUALITY_DEFAULT.md) | 30.41% lower source-to-quant KL at matched packed decoder bytes. | Controlled Qwen3.5-9B comparison; the NLL interval included zero. |
+| [Scale refinement](docs/QUALITY_REFINEMENT.md) | 2.93% and 3.44% lower heldout expert-output NMSE at unchanged packed bytes. | Two first-block experts; integer codes stayed unchanged. |
+| [Release replay](docs/verification/quality-refinement-release-20261015.json) | Tensor-exact replay; the earlier 24 CUDA projection cases remain separately recorded. | No new GPU execution in that release verification. |
+
+See [current status](docs/STATUS.md) for artifact-specific outcomes and blockers.
+The banner is project artwork; its model labels do not replace that status matrix.
+
 ## Runtime contract
 
 The native path requires Linux/NVIDIA CUDA, symmetric INT4, `desc_act=False`,
@@ -61,6 +94,16 @@ formats, group sizes, dimensions, adapters and exclusions. A supported
 representation does not certify every model, GPU or external consumer.
 
 ## Quick start
+
+Use **Linux with an NVIDIA CUDA GPU** for native inference. The package requires
+Python **3.10+**, PyTorch **2.8+** and Transformers **5.8+**; see
+[requirements.txt](requirements.txt) for the complete dependency constraints.
+The device gate requires compute capability **8.0 or newer**, with Ampere as the
+kernel's primary target. Eligibility does not establish performance on every GPU.
+Unless a compatible prebuilt V3 extension is supplied, first native use builds
+the extension and requires a CUDA toolkit compatible with PyTorch, `nvcc`, a
+C++17 compiler and Ninja. See [pinned-binary loading](docs/PINNED_V3_VALIDATION.md)
+for controlled validation environments.
 
 ```bash
 git clone https://github.com/groxaxo/GPTQ-Pro.git
@@ -98,6 +141,34 @@ Do not pass a Transformers `device_map="auto"` during quantization; the module
 loop owns placement/offload. Select the exact model driver below, prepare
 representative held-out/calibration data and validate a saved artifact before
 promotion. GPU commands require normal resource admission on a shared machine.
+
+## Native inference
+
+For a compatible saved checkpoint that fits on the selected GPU:
+
+```python
+from transformers import AutoTokenizer
+from gptqmodel import BACKEND, GPTQModel
+
+checkpoint = "model-gptq-pro-int4"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=False)
+model = GPTQModel.load(
+    checkpoint,
+    backend=BACKEND.GPTQ_PRO,
+    device="cuda:0",
+    trust_remote_code=False,
+)
+inputs = tokenizer("Explain symmetric INT4 quantization briefly.", return_tensors="pt")
+inputs = inputs.to("cuda:0")
+outputs = model.generate(**inputs, max_new_tokens=128, do_sample=False)
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+```
+
+This is a basic text-generation API example. Use the model's own chat template
+for instruction/chat workloads and its owning guide for multimodal inputs,
+mixed precision or multi-GPU placement. A saved GPTQ artifact still needs a
+matching architecture, group layout and precision policy. `BACKEND.AUTO` is
+available, while the explicit backend above makes the native runtime choice clear.
 
 ## Qwen3.8-27B
 
@@ -162,6 +233,10 @@ source/artifact identity and deployment gates. It separates software regressions
 structural checks, native fixtures and actual model-answer scores. No GitHub
 Actions dependency is required for those checks.
 
+For documentation-only changes, check links, anchors, fenced-example syntax and
+source/API references locally. The GPU/model examples above require their own
+environment and artifact checks; syntax validation does not execute them.
+
 ## Repository map
 
 | Path | Purpose |
@@ -170,6 +245,7 @@ Actions dependency is required for those checks.
 | `gptqmodel_ext/gptq_pro/` | CUDA/C++ kernel sources. |
 | `scripts/` | Preflight, quantization, recovery, benchmark and validation drivers. |
 | `tests/` | Scoped software, architecture and kernel regressions. |
+| [examples/README.md](examples/README.md) | Example status and current entry points; inherited examples need compatibility review. |
 | [docs/README.md](docs/README.md) | Canonical documentation index, evidence and historical material. |
 | [docs/STATUS.md](docs/STATUS.md) | Consolidated support, qualification and known blockers. |
 

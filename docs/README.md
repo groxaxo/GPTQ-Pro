@@ -12,6 +12,8 @@ summary; the linked source and dated evidence establish each claim.
 | Goal | Canonical document |
 | --- | --- |
 | Install the package and inspect a basic example | [Repository quick start](../README.md#quick-start) |
+| Load a compatible saved checkpoint on CUDA | [Native inference](../README.md#native-inference) |
+| Check the front-page implementation and evidence summary | [Current state](../README.md#current-state) |
 | Check runtime limits, model support and known blockers | [Support and qualification status](STATUS.md) |
 | Choose the default quantization recipe | [Validated quality default](VALIDATED_QUALITY_DEFAULT.md) |
 | Run local checks and understand release gates | [Validation guide](VALIDATION.md) |

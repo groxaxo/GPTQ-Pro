@@ -1,8 +1,11 @@
 # GPTQ-Pro support and qualification status
 
-Documentation review: **15 October 2026**, against merged source
-`46fbee5909d4c773631e1c6322538a7ddcd87a91`. The measurements below retain their
-original dates; this review is not a new GPU execution or live queue report.
+Documentation review: **27 October 2026**, against published source
+`95c82610f5624645552fe0c97b6cd0b7050b894f`, including the merged scale-refinement
+release. Checked the current recipe factories, native linear/runtime loader,
+dependency constraints, Qwen3.8 preset mismatch and versioned evidence. The
+measurements below retain their original dates; this review is not a new CPU/GPU
+execution or live queue report.
 
 [Documentation index](README.md) · [Local validation](VALIDATION.md)
 
@@ -119,6 +122,11 @@ their integer codes. The earlier 24-case native CUDA result checks projection
 kernel parity, not whole-model accuracy. Fresh release checks and exact replay
 are recorded in [release verification](verification/quality-refinement-release-20261015.json).
 The Heretic model's full workload/deployment qualification remains unchanged.
+
+That 15 October release record reports **650 CPU tests passed**, zero failures,
+errors or skips, and tensor-exact replay of both saved scale-only candidates.
+It explicitly records no new GPU runs. These counts describe the recorded
+release check, not tests rerun for the 27 October documentation review.
 
 The CSV writer now preserves sample counts and their solver/unit fields. Do not
 reinterpret old malformed CSV rows as correct; use the original structured JSON.

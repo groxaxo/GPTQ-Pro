@@ -1,107 +1,35 @@
-# Examples
+# Examples and current entry points
 
-To run example scripts in this folder, one must first install `gptqmodel` as described in [this](../README.md)
+This directory contains inherited GPTQModel examples. Some retain old model
+paths, bare configuration defaults, removed backends or external-runtime APIs.
+Review a script before running it. These files do not expand the supported
+backend set of this fork.
 
-## Quantization
-> Commands in this chapter should be run under `quantization` folder.
+For a new GPTQ-Pro workflow, start with the maintained entry points below.
 
-### Basic Usage
-To Execute `basic_usage.py`, using command like this:
-```shell
-python basic_usage.py
-```
+| Goal | Current entry point |
+| --- | --- |
+| Install and quantize with the recommended recipe | [Repository quick start](../README.md#quick-start) |
+| Load a compatible checkpoint through the native backend | [Native inference example](../README.md#native-inference) |
+| Select the exact Qwen model driver | [Qwen workflow matrix](../README.md#qwen-support-matrix) |
+| Inspect quality defaults and their measured scope | [Default recipe](../docs/VALIDATED_QUALITY_DEFAULT.md) |
+| Refine captured blocks or sequential batches | [Refinement toolkit](../docs/QUALITY_REFINEMENT.md) |
+| Run local checks and artifact qualification | [Validation guide](../docs/VALIDATION.md) |
 
-This script also showcases how to download/upload quantized model from/to 🤗 Hub, to enable those features, you can uncomment the commented codes.
+## Compatibility boundary
 
-To Execute `basic_usage_wikitext2.py`, using command like this:
-```shell
-python basic_usage_wikitext2.py
-```
-> Note: There is about 0.6 ppl degrade on opt-125m model using GPTQModel, compared to GPTQ-for-LLaMa.
+`BACKEND.GPTQ_PRO` is the native inference backend shipped by this repository.
+`BACKEND.AUTO` selects among this fork's available implementations. Native
+inference requires Linux/NVIDIA CUDA and a compatible symmetric INT4 artifact
+with `desc_act=False`; see the [runtime contract](../docs/STATUS.md#native-runtime-contract).
 
-### Quantize with different backend
-To Execute `basic_usage_bitblas.py`, using command like this:
-```shell
-python basic_usage_bitblas.py
-```
+References in inherited examples to IPEX/CPU, ExLlama, BitBLAS, Triton, SGLang,
+vLLM or Marlin are historical or external integration material. They are not
+installation instructions for additional native backends in this fork. Likewise,
+the inherited `basic_usage.py` uses a historical local source path and bare g128
+configuration; use `QuantizeConfig.quality_4bit()` for the recommended defaults.
 
-To Execute `basic_usage_exllama.py`, using command like this:
-```shell
-python basic_usage_exllama.py --backend EXLLAMA/EXLLAMA_V2
-```
-
-To Execute `basic_usage_marlin.py`, using command like this:
-```shell
-python basic_usage_marlin.py
-```
-
-To Execute `basic_usage_ipex.py`, using command like this:
-```shell
-python basic_usage_ipex.py
-```
-
-To Execute `basic_usage_sglang.py`, using command like this:
-```shell
-python basic_usage_sglang.py
-```
-
-To Execute `basic_usage_triton.py`, using command like this:
-```shell
-python basic_usage_triton.py
-```
-
-To Execute `basic_usage_vllm.py`, using command like this:
-```shell
-python basic_usage_vllm.py
-```
-
-Use `--help` flag to see detailed descriptions for more command arguments.
-
-The alpaca dataset used in here is a cleaned version provided by **gururise** in [AlpacaDataCleaned](https://github.com/gururise/AlpacaDataCleaned)
-
-## Evaluation
-> Commands in this chapter should be run under `evaluation` folder.
-
-### Language Modeling Task
-`run_language_modeling_task.py` script gives an example of using `LanguageModelingTask` to evaluate model's performance on language modeling task before and after quantization using `tatsu-lab/alpaca` dataset.
-
-To execute this script, using command like this:
-```shell
-CUDA_VISIBLE_DEVICES=0 python run_language_modeling_task.py --base_model_dir PATH/TO/BASE/MODEL/DIR --quantized_model_dir PATH/TO/QUANTIZED/MODEL/DIR
-```
-
-Use `--help` flag to see detailed descriptions for more command arguments.
-
-### Sequence Classification Task
-`run_sequence_classification_task.py` script gives an example of using `SequenceClassificationTask` to evaluate model's performance on sequence classification task before and after quantization using `cardiffnlp/tweet_sentiment_multilingual` dataset.
-
-To execute this script, using command like this:
-```shell
-CUDA_VISIBLE_DEVICES=0 python run_sequence_classification_task.py --base_model_dir PATH/TO/BASE/MODEL/DIR --quantized_model_dir PATH/TO/QUANTIZED/MODEL/DIR
-```
-
-Use `--help` flag to see detailed descriptions for more command arguments.
-
-### Text Summarization Task
-`run_text_summarization_task.py` script gives an example of using `TextSummarizationTask` to evaluate model's performance on text summarization task before and after quantization using `samsum` dataset.
-
-To execute this script, using command like this:
-```shell
-CUDA_VISIBLE_DEVICES=0 python run_text_summarization_task.py --base_model_dir PATH/TO/BASE/MODEL/DIR --quantized_model_dir PATH/TO/QUANTIZED/MODEL/DIR
-```
-
-Use `--help` flag to see detailed descriptions for more command arguments.
-
-## Benchmark
-> Commands in this chapter should be run under `benchmark` folder.
-
-### Generation Speed
-`generation_speed.py` script gives an example of how to benchmark the generations speed of pretrained and quantized models that `gptqmodel` supports, this benchmarks model generation speed in tokens/s metric.
-
-To execute this script, using command like this:
-```shell
-CUDA_VISIBLE_DEVICES=0 python generation_speed.py --model_id_or_path PATH/TO/MODEL/DIR
-```
-
-Use `--help` flag to see detailed descriptions for more command arguments.
-
+Evaluation scripts may need optional packages, datasets and model-specific
+configuration. A script's presence is not evidence that its workload passed.
+Keep calibration and evaluation data separate and record the exact artifact,
+runtime and task profile when reporting results.
