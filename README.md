@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/gptq-pro-banner.svg" alt="GPTQ-Pro — Ampere-native INT4 quantization and inference" width="100%">
+  <img src="assets/gptq-pro-banner.png" alt="GPTQ-Pro — Ampere-native INT4 quantization and inference" width="100%">
 </p>
 
 <h1 align="center">GPTQ-Pro</h1>
