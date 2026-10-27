@@ -48,7 +48,9 @@ def test_container_configuration_uses_single_backend_environment():
     dockerfile = _read("Dockerfile")
 
     assert environment.startswith("name: gptq-pro\n")
-    assert "ARG ENV_NAME=gptq-pro" in dockerfile
+    # Overriding the image command must retain the project Python environment.
+    assert "PATH=/opt/venv/bin:${PATH}" in dockerfile
+    assert "conda activate" not in dockerfile
     assert ' -e ".[vllm' not in dockerfile
     assert ' -e ".[sglang' not in dockerfile
     assert "gptq-pro-vllm" not in dockerfile

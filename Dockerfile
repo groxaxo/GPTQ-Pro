@@ -1,53 +1,60 @@
-FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04
+# syntax=docker/dockerfile:1
 
-ARG CONDA_DIR=/opt/conda
-ARG ENV_NAME=gptq-pro
+# Match the toolkit used for first-use CUDA extension compilation to the wheel.
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PIP_CONSTRAINT=/opt/gptq-pro/constraints.txt \
     CUDA_DEVICE_ORDER=PCI_BUS_ID \
     HF_HOME=/workspace/.cache/huggingface \
-    TRANSFORMERS_CACHE=/workspace/.cache/huggingface \
     GPTQMODEL_EXT_BUILD=/workspace/.cache/gptqmodel_extensions \
-    PATH=${CONDA_DIR}/bin:${PATH}
+    TORCH_EXTENSIONS_DIR=/workspace/.cache/torch_extensions \
+    MAX_JOBS=4 \
+    PATH=/opt/venv/bin:${PATH}
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    build-essential \
-    ca-certificates \
-    curl \
-    git \
-    git-lfs \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    pkg-config \
-    wget && \
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        git-lfs \
+        libglib2.0-0t64 \
+        libgomp1 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        pkg-config \
+        python3-dev \
+        python3-venv && \
     rm -rf /var/lib/apt/lists/* && \
-    git lfs install
+    git lfs install --system && \
+    python3 -m venv "${VIRTUAL_ENV}"
 
-RUN wget -qO /tmp/miniforge.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh && \
-    bash /tmp/miniforge.sh -b -p ${CONDA_DIR} && \
-    rm -f /tmp/miniforge.sh && \
-    conda config --system --set auto_activate_base false
+# Constraints apply to every pip operation, including downstream installs.
+# Install torch from its CUDA-specific index, rather than an extra index that
+# can select a newer PyPI wheel with a different CUDA ABI.
+COPY docker/constraints.txt /opt/gptq-pro/constraints.txt
+RUN python -m pip install --upgrade pip wheel 'setuptools>=77.0.1,<83' && \
+    python -m pip install --index-url https://download.pytorch.org/whl/cu128 \
+        'torch==2.10.0+cu128'
+
+# Keep dependency installation cached when only repository source changes.
+COPY requirements.txt /tmp/gptq-pro-requirements.txt
+RUN python -m pip install -r /tmp/gptq-pro-requirements.txt && \
+    rm /tmp/gptq-pro-requirements.txt
 
 WORKDIR /workspace/GPTQ-Pro
-
-COPY environment.yml ./environment.yml
-
-RUN conda env create -f environment.yml && \
-    conda clean -afy
-
-SHELL ["/bin/bash", "-lc"]
-
 COPY . .
 
-RUN source ${CONDA_DIR}/etc/profile.d/conda.sh && \
-    conda activate ${ENV_NAME} && \
-    python -m pip install --upgrade pip wheel setuptools && \
-    python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 "torch>=2.8.0" && \
-    python -m pip install -v --no-build-isolation -e .
+# Import/metadata checks need no GPU and do not compile the lazy CUDA kernel.
+RUN python -m pip install --no-build-isolation --no-deps -e . && \
+    python -m pip check && \
+    python -c "import torch; from gptqmodel import GPTQModel, QuantizeConfig; assert torch.version.cuda == '12.8'; assert QuantizeConfig.quality_4bit().bits == 4; print('GPTQ-Pro import OK:', torch.__version__)"
 
-CMD ["/bin/bash", "-lc", "source /opt/conda/etc/profile.d/conda.sh && conda activate gptq-pro && exec bash"]
+# PATH selects the same environment for the default shell and overridden CMDs.
+CMD ["/bin/bash"]

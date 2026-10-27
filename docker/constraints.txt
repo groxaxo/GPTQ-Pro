@@ -1,0 +1,5 @@
+# CUDA 12.8 / PyTorch 2.10 native-extension compatibility pair.
+# Package requirements remain in requirements.txt; these pins are Docker-only.
+torch==2.10.0+cu128
+torchao==0.16.0
+setuptools>=77.0.1,<83

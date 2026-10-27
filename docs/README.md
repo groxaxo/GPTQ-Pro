@@ -12,6 +12,7 @@ summary; the linked source and dated evidence establish each claim.
 | Goal | Canonical document |
 | --- | --- |
 | Install the package and inspect a basic example | [Repository quick start](../README.md#quick-start) |
+| Build and run the CUDA development container | [Docker guide](DOCKER.md) |
 | Load a compatible saved checkpoint on CUDA | [Native inference](../README.md#native-inference) |
 | Check the front-page implementation and evidence summary | [Current state](../README.md#current-state) |
 | Check runtime limits, model support and known blockers | [Support and qualification status](STATUS.md) |

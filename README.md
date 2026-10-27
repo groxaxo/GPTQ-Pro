@@ -118,6 +118,10 @@ The package declares Python 3.10+; model-specific dependencies and architecture
 checks still apply. Use a dedicated environment rather than upgrading a running
 serving or quantization environment in place.
 
+For a CUDA development container, use the [Docker guide](docs/DOCKER.md). Its
+CUDA 12.8 toolkit and pinned PyTorch/TorchAO pair share one environment for
+interactive shells and direct Python commands.
+
 ```python
 from gptqmodel import BACKEND, GPTQModel, QuantizeConfig
 
@@ -203,6 +207,8 @@ See [artifact-specific limits](docs/STATUS.md#model-family-support-versus-artifa
 older recipe, and `max_quality_4bit()` is a separate GPTAQ research candidate.
 The name `max_quality` is not proof of superiority. Bare `QuantizeConfig(...)`
 is not the quality factory.
+
+`max_quality_4bit()` does **not** enable FOEM or rotation by default.
 
 Default values and the measured quality rationale live in
 [one recipe reference](docs/VALIDATED_QUALITY_DEFAULT.md). Requested/effective
