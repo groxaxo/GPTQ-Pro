@@ -51,6 +51,12 @@ examples are not additional inference backends bundled by this fork.
 | Architecture, packing and source-precision safeguards | [Model routing](docs/QWEN35_QWEN36.md) and [storage contract](docs/STORAGE_NUMERICAL_CONTRACT.md) |
 | Selective Heretic export recovery and native loading | [Native qualification](docs/qwen36-native-qualification.md) |
 
+## LFM3-Audio-2B: selective GPTQ-Pro INT4 speech
+
+The validated 24-layer, **142-projection** custom INT4 speech overlay is [published on Hugging Face](https://huggingface.co/groxaxo/LFM3-Audio-2B-GPTQ-Pro-INT4) with 10 bilingual A/B listening comparisons, a reproducible [LFM3 inference example](examples/lfm3_audio/README.md), and the frozen kernel backend. This is **not yet native GPTQModel architecture registration**; the original LiquidAI BF16 acoustic modules remain required.
+
+On the same RTX 3090, the quantized model used **53.87% less allocated CUDA tensor memory** (3.683 to 1.699 GiB). Measured ASR generation RTF increased (EN 0.0348 to 0.0387, ES 0.0361 to 0.0408), while synthesized speech RTF was similar (EN 0.2721 to 0.2701, ES 0.2535 to 0.2660). These figures exclude the codec and phone stack; the self-ASR listening proxy does **not** establish human MOS or production call fidelity. See the [full evidence and audio examples](https://huggingface.co/groxaxo/LFM3-Audio-2B-GPTQ-Pro-INT4/blob/main/docs/rtf_audio_quality_20261029.md).
+
 ## Current state
 
 Reviewed **27 October 2026** against the published source. GPTQ-Pro ships one

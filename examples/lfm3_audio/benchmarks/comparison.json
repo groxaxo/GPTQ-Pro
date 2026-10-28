@@ -1,0 +1,73 @@
+{
+  "title": "LiquidAI/LFM3-Audio-2B BF16 vs groxaxo GPTQ-Pro INT4 g64, same RTX 3090",
+  "evaluation_date": "2026-10-29",
+  "model_revision": "9d49701c372d6011d900f6abb40c6b296fb706dd",
+  "gptq_pro_source_commit": "c49c4b7bb142371f9a2c2dec81558ec7edc89d65",
+  "gpu": "NVIDIA GeForce RTX 3090 24GiB; same physical GPU0 for both precision configurations",
+  "hardware_context": "Ubuntu x86_64, Intel Core i7-12700KF, CUDA 12.8, PyTorch 2.10.0, Transformers 5.21.0",
+  "test_dataset": "Google FLEURS en_us and es_419 test split, first 50 utterances per language, human read-speech",
+  "test_dataset_license": "CC-BY-4.0",
+  "audio_preprocessing": "Per-file simulated 8-kHz, G.711 mu-law-equivalent companding followed by 16-kHz input resampling; not live PSTN",
+  "calibration": "16 separate synthetic LFM3-generated English/Spanish call phrases, not benchmark speech",
+  "quant_method": "GPTQ-Pro quality_4bit W4 G64, 142 selectively quantized language-backbone projections; audio components preserved BF16",
+  "precision_comparison": {
+    "en_us": {
+      "samples": 50,
+      "reference_words": 1076,
+      "audio_duration_s": 474.96,
+      "bf16_word_errors": 49,
+      "int4_word_errors": 53,
+      "bf16_wer_pct": 4.554,
+      "int4_wer_pct": 4.926,
+      "int4_minus_bf16_wer_percentage_points": 0.372,
+      "paired_bootstrap_95pct_delta_wer_pp": [
+        -0.097,
+        0.894
+      ],
+      "bootstrap_resamples": 10000,
+      "bf16_generation_s": 16.511,
+      "int4_generation_s": 18.368,
+      "int4_generation_slowdown_pct": 11.25,
+      "bf16_generation_real_time_factor": 0.0348,
+      "int4_generation_real_time_factor": 0.0387,
+      "bf16_generation_p50_ms": 304.5,
+      "int4_generation_p50_ms": 337.5
+    },
+    "es_419": {
+      "samples": 50,
+      "reference_words": 1259,
+      "audio_duration_s": 586.92,
+      "bf16_word_errors": 32,
+      "int4_word_errors": 39,
+      "bf16_wer_pct": 2.542,
+      "int4_wer_pct": 3.098,
+      "int4_minus_bf16_wer_percentage_points": 0.556,
+      "paired_bootstrap_95pct_delta_wer_pp": [
+        0.149,
+        1.062
+      ],
+      "bootstrap_resamples": 10000,
+      "bf16_generation_s": 21.192,
+      "int4_generation_s": 23.951,
+      "int4_generation_slowdown_pct": 13.02,
+      "bf16_generation_real_time_factor": 0.0361,
+      "int4_generation_real_time_factor": 0.0408,
+      "bf16_generation_p50_ms": 420.0,
+      "int4_generation_p50_ms": 475.0
+    }
+  },
+  "cuda_memory_allocated_GiB": {
+    "bf16": 3.683,
+    "int4": 1.699,
+    "reduction_pct": 53.87
+  },
+  "important_methodology_limits": [
+    "WER is a small-sample heldout measurement, not a statistically proven ranking.",
+    "Results include one pass per precision; no repeated-run latency variability evaluation.",
+    "Latency is model generation after preprocessing; not real-time SIP/PSTN end-to-end latency.",
+    "FLEURS human read speech lacks New Zealand telephone-call noise and conversational disfluency.",
+    "PyTorch allocated tensor memory is not total nvidia-smi process VRAM or evidence of concurrency capacity.",
+    "Speech quality, Spanish instruction adherence, booking correctness, VAD/barge-in, concurrency and TTFA are not established."
+  ],
+  "sample_metadata_file": "benchmarks/fleurs_100_paired_anonymized.json"
+}

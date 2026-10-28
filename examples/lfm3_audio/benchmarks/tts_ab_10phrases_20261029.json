@@ -1,0 +1,421 @@
+{
+  "date": "2026-10-29",
+  "title": "Matched-seed TTS listening comparison: 5 English and 5 Spanish phrases",
+  "source_model": "LiquidAI/LFM3-Audio-2B",
+  "source_revision": "9d49701c372d6011d900f6abb40c6b296fb706dd",
+  "quantized_model": "groxaxo/LFM3-Audio-2B-GPTQ-Pro-INT4",
+  "quantization": "Native GPTQ-Pro W4 G64 selective language backbone overlay, 142 modules",
+  "hardware": "One free RTX 3090 (GPU 0), BF16 and INT4 resident together",
+  "number_of_pairs": 10,
+  "individual_unmixed_stems": 20,
+  "generation_config": {
+    "system": "Perform TTS in American English / Spanish using a female voice",
+    "matched_random_seed": true,
+    "audio_temperature": 1.0,
+    "audio_top_k": 128,
+    "audio_repetition_penalty": 1.1,
+    "audio_repetition_window": 4096,
+    "max_new_tokens": 900
+  },
+  "audio": {
+    "A": "BF16",
+    "B": "GPTQ-Pro INT4",
+    "pause_s": 1.2,
+    "ab_composite": "RMS matched toward -23 dBFS, peak ceiling 0.88, MP3 128k and OGG Opus",
+    "individual_stems": "No gain adjustment; lossy Opus OGG from original generated WAV (not PCM lossless)"
+  },
+  "quality_assessment": "ASR roundtrip with the BF16 LFM3 model transcribing each generated A and B sample. Word overlap recall and string similarity are intelligibility proxies, not human MOS and not independent ASR.",
+  "acceptance_gate": "All 10 paired samples passed word-recall >=0.60, string similarity >=0.54, duration checks and matched duration-ratio checks.",
+  "notable_es1": "Spanish sample ES_01 has lower roundtrip recall in INT4 (0.714) than BF16 (0.929) and longer duration (7.68s vs 5.60s). Treat this as a caveat, not a subjective rating.",
+  "bias_caveat": "The quality-check ASR model is BF16 LFM3; its evaluation may favor its own synthesized output.",
+  "statistics": {
+    "en": {
+      "pairs": 5,
+      "avg_word_recall_bf16": 0.9666,
+      "avg_word_recall_gptq_pro": 0.9666,
+      "total_audio_s_bf16": 25.6,
+      "total_audio_s_gptq_pro": 25.2,
+      "generation_time_s_bf16": 6.967,
+      "generation_time_s_gptq_pro": 6.807
+    },
+    "es": {
+      "pairs": 5,
+      "avg_word_recall_bf16": 0.9858,
+      "avg_word_recall_gptq_pro": 0.9428,
+      "total_audio_s_bf16": 29.6,
+      "total_audio_s_gptq_pro": 30.88,
+      "generation_time_s_bf16": 7.503,
+      "generation_time_s_gptq_pro": 8.215
+    }
+  },
+  "limitations": [
+    "Only 10 paired TTS phrases; no listener study, MOS, ABX or CMOS.",
+    "Same random seed does not ensure identical stochastic sampling outcomes when weights differ.",
+    "Not a measured voice-quality ranking or real telephone-call test.",
+    "Generation timings are one pass per sample, not reliable service latency benchmarks.",
+    "Raw stems are un-normalized in gain but lossy OGG compression; the PCM WAV masters remain local.",
+    "This TTS comparison is separate from held-out human FLEURS ASR WER benchmarks."
+  ],
+  "records": [
+    {
+      "id": "EN_01",
+      "language": "en",
+      "prompt": "Kia ora! Thanks for calling Auckland Automate IT. How can I help you today?",
+      "seed": 2026102902,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Kia ora. Thanks for calling Auckland Automate IT. How can I help you today?",
+        "B_GPTQPro": "Kia ora! Thanks for calling Auckland Automate IT. How can I help you today?"
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 5.44,
+        "gptq_pro": 5.12
+      },
+      "generation_s": {
+        "bf16": 1.922,
+        "gptq_pro": 1.347
+      },
+      "files": {
+        "ab_mp3": "EN_01_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "EN_01_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "EN_01_A_BF16.ogg",
+        "gptq_pro_ogg": "EN_01_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "25a95985d99cb1977cb4b6aecb72959d8631da34187893c9d697edac697d7e78",
+        "ab_ogg": "c42c8fa11702090bc146ebbdc4032d4476c4d2e89e21f6ee31908c6e16881b64",
+        "bf16_ogg": "89b14b4c1a029f20fbb3b1d6ae0e124b713e89d97592d948a6cdc62b00f83b4f",
+        "gptq_pro_ogg": "27a549866687fb096e13dc91981404797e941c430c1fe586bbcc9be94ab6d656"
+      }
+    },
+    {
+      "id": "EN_02",
+      "language": "en",
+      "prompt": "Of course. I can check appointment availability for Friday morning.",
+      "seed": 2026102903,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Of course, I can check appointment availability for Friday morning.",
+        "B_GPTQPro": "Of course, I can check appointment availability for Friday morning."
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 4.16,
+        "gptq_pro": 4.24
+      },
+      "generation_s": {
+        "bf16": 1.056,
+        "gptq_pro": 1.201
+      },
+      "files": {
+        "ab_mp3": "EN_02_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "EN_02_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "EN_02_A_BF16.ogg",
+        "gptq_pro_ogg": "EN_02_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "6ef0af2ada6f633b495e632f78dce74408cd4552c4e4fcb2299dc62bc3cd123b",
+        "ab_ogg": "c1ef513fb7a1b5c44b8778292087c5db52768c3e6c8545dabb7c9292b9407a1c",
+        "bf16_ogg": "c92b50d699a7e551868910265a724e1e4cc848392bac5f2d02ff1b451cd415ac",
+        "gptq_pro_ogg": "8e3baa164fdce57f47a8817c28af1c3f744cad9e126471ac3157d0114cc13754"
+      }
+    },
+    {
+      "id": "EN_03",
+      "language": "en",
+      "prompt": "Could you please spell your surname and confirm your preferred contact number?",
+      "seed": 2026102904,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Could you please spell your surname and confirm your preferred contact number?",
+        "B_GPTQPro": "Could you please spell your surname and confirm your preferred contact number?"
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 4.48,
+        "gptq_pro": 4.48
+      },
+      "generation_s": {
+        "bf16": 1.136,
+        "gptq_pro": 1.241
+      },
+      "files": {
+        "ab_mp3": "EN_03_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "EN_03_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "EN_03_A_BF16.ogg",
+        "gptq_pro_ogg": "EN_03_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "8b987bc9ef9bfe9ba4850d195f54a4252da04bc3e20ffd36b9ae1bc884ebe90f",
+        "ab_ogg": "65ce4d38ee5992d3f73422eb19a2be478734c3681b5222d1c73654735ddddbf6",
+        "bf16_ogg": "c212e5290c917d90fa4d476331dbd0f06b063d6699a349280a8e3e5bf2907125",
+        "gptq_pro_ogg": "de474c86b3a204a2ec905242a6830b6a5769cd2ab169218fa10096b53ce9fc9e"
+      }
+    },
+    {
+      "id": "EN_04",
+      "language": "en",
+      "prompt": "Our team is helping other customers right now, but I can arrange a callback this afternoon.",
+      "seed": 2026102905,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Our team is helping other customers right now, but I can arrange a call back this afternoon.",
+        "B_GPTQPro": "Our team is helping other customers right now, but I can arrange a call back this afternoon."
+      },
+      "roundtrip_word_recall": {
+        "bf16": 0.938,
+        "gptq_pro": 0.938
+      },
+      "audio_duration_s": {
+        "bf16": 4.96,
+        "gptq_pro": 5.28
+      },
+      "generation_s": {
+        "bf16": 1.221,
+        "gptq_pro": 1.387
+      },
+      "files": {
+        "ab_mp3": "EN_04_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "EN_04_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "EN_04_A_BF16.ogg",
+        "gptq_pro_ogg": "EN_04_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "de85ee7149ceab40de44174998ef893a143f6351e027a1ee2bfefa12277a1815",
+        "ab_ogg": "88318527303de86e4d221f846976be3688aa3632c0fa5a7f7002be646d804ff9",
+        "bf16_ogg": "72fc07623f0411ca8206e0d24fd3d3b401f290c28023558d518deb349b290cb1",
+        "gptq_pro_ogg": "823557894600088673b4f22be9c9c2004951b0d49659bd7f07bc07d6cb2ddc43"
+      }
+    },
+    {
+      "id": "EN_05",
+      "language": "en",
+      "prompt": "Just to confirm, you're looking for an appointment for two people at ten thirty tomorrow. Is that right?",
+      "seed": 2026102906,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Just to confirm, you're looking for an appointment for two people at 10.30 tomorrow. Is that right?",
+        "B_GPTQPro": "Just to confirm, you're looking for an appointment for two people at 10.30 tomorrow. Is that right?"
+      },
+      "roundtrip_word_recall": {
+        "bf16": 0.895,
+        "gptq_pro": 0.895
+      },
+      "audio_duration_s": {
+        "bf16": 6.56,
+        "gptq_pro": 6.08
+      },
+      "generation_s": {
+        "bf16": 1.632,
+        "gptq_pro": 1.631
+      },
+      "files": {
+        "ab_mp3": "EN_05_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "EN_05_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "EN_05_A_BF16.ogg",
+        "gptq_pro_ogg": "EN_05_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "cf5259d0fb0fbe744a937528f19a25a210e382c32324ae68d959e0d40a7fa821",
+        "ab_ogg": "0778a4c69d2350dbbc83a8f4cb6ee61db8fcccfdb81b19e59aa206b363bde957",
+        "bf16_ogg": "4086b3c8c843c5954386535024bdbc3fd3c3a65067a8a19430c74d7c21100213",
+        "gptq_pro_ogg": "8612a1e94eb996002570891789547c4fa10c517361c1f37942e56978f72f5978"
+      }
+    },
+    {
+      "id": "ES_01",
+      "language": "es",
+      "prompt": "¡Buen día! Gracias por llamar a Auckland Automate IT. ¿En qué puedo ayudarte hoy?",
+      "seed": 2026102907,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Buen día. Gracias por llamar a Auckland Autometa IT. ¿En qué puedo ayudarte hoy?",
+        "B_GPTQPro": "Wenbia, gracias por llamar a Auckland Couting o Pimeiti. ¿En qué puedo ayudarte hoy?"
+      },
+      "roundtrip_word_recall": {
+        "bf16": 0.929,
+        "gptq_pro": 0.714
+      },
+      "audio_duration_s": {
+        "bf16": 5.6,
+        "gptq_pro": 7.68
+      },
+      "generation_s": {
+        "bf16": 1.42,
+        "gptq_pro": 2.036
+      },
+      "files": {
+        "ab_mp3": "ES_01_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "ES_01_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "ES_01_A_BF16.ogg",
+        "gptq_pro_ogg": "ES_01_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "3a92b542c45c09fd124eec2e57ce130844ba70be2987dedd08f91a69a9042dc5",
+        "ab_ogg": "4a28f9f9896795ac4d236deb8ddcb9853184023e198c3000f8e88d621d67f861",
+        "bf16_ogg": "bf57066368d799f9c6b1f1073f782d5088382d700bcb1cf414fcfe876eb3b776",
+        "gptq_pro_ogg": "43fe4061cbd1ef07d98c0d5c7231983208b434367922ba22bdd7485b361c7072"
+      }
+    },
+    {
+      "id": "ES_02",
+      "language": "es",
+      "prompt": "Por supuesto. Puedo consultar si hay turnos disponibles para el viernes por la mañana.",
+      "seed": 2026102908,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Por supuesto, puedo consultar si hay turnos disponibles para el viernes por la mañana.",
+        "B_GPTQPro": "Por supuesto. Puedo consultar si hay turnos disponibles para el viernes por la mañana."
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 5.44,
+        "gptq_pro": 5.6
+      },
+      "generation_s": {
+        "bf16": 1.385,
+        "gptq_pro": 1.473
+      },
+      "files": {
+        "ab_mp3": "ES_02_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "ES_02_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "ES_02_A_BF16.ogg",
+        "gptq_pro_ogg": "ES_02_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "ae66ee66a552eb14c061b61b3ffa4399b89b2cc05921a30315b29c22e244d5f2",
+        "ab_ogg": "a6b9d623c91a225522d9886050e055797ac1f16faf122e41f186722b71dcc6c9",
+        "bf16_ogg": "663b175cd0a28799903dd73c2d0d7b889240512a7cfe5fae424d82f0d7e2e3f2",
+        "gptq_pro_ogg": "46730ae57e1421b0d1e95053d99120a4f641633394ffb7e503bf3b1eff476461"
+      }
+    },
+    {
+      "id": "ES_03",
+      "language": "es",
+      "prompt": "¿Podrías deletrear tu apellido y confirmar a qué número preferís que te llamemos?",
+      "seed": 2026102909,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Podrías deletrear tu apellido y confirmar a qué número preferís que te llamemos.",
+        "B_GPTQPro": "Podrías deletrear tu apellido y confirmar a qué número preferís que te llamemos."
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 4.96,
+        "gptq_pro": 4.8
+      },
+      "generation_s": {
+        "bf16": 1.277,
+        "gptq_pro": 1.296
+      },
+      "files": {
+        "ab_mp3": "ES_03_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "ES_03_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "ES_03_A_BF16.ogg",
+        "gptq_pro_ogg": "ES_03_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "fcffeaacd2f75d1ed49015c92b06348c2e7712e05284a3f54e4b90f9db781db6",
+        "ab_ogg": "243283ecd61d1025cfa39b3699ddfe12a27b0c39cdc7a63666b1f04de27b498f",
+        "bf16_ogg": "5458bad2126aebeafb3e18ff83bd5c68f40e973da8c56d7cdd6907ba0c2b9d4f",
+        "gptq_pro_ogg": "c5b122ebbe0b6b5afdf4c49b2878eef850928d67c0ab190d79587eea456ec02f"
+      }
+    },
+    {
+      "id": "ES_04",
+      "language": "es",
+      "prompt": "Nuestro equipo está atendiendo a otros clientes, pero puedo pedir que te devuelvan la llamada esta tarde.",
+      "seed": 2026102910,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Nuestro equipo está atendiendo a otros clientes, pero puedo pedir que te devuelvan la llamada esta tarde.",
+        "B_GPTQPro": "Nuestro equipo está atendiendo a otros clientes, pero puedo pedir que te devuelvan la llamada esta tarde."
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 6.56,
+        "gptq_pro": 6.08
+      },
+      "generation_s": {
+        "bf16": 1.658,
+        "gptq_pro": 1.643
+      },
+      "files": {
+        "ab_mp3": "ES_04_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "ES_04_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "ES_04_A_BF16.ogg",
+        "gptq_pro_ogg": "ES_04_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "57a21ec0144fad51a016f31a8d09f0da5f9ea4d58e095688f436579503135269",
+        "ab_ogg": "d845ca98acf8de9f68abc64b42fd0a2ad17d67564c281d8ad76e9027b9cd6e49",
+        "bf16_ogg": "6c05df52b1a5fb7ac58f4a58fd94320e48ded165b6749b38b864e8fc99c097c9",
+        "gptq_pro_ogg": "5e933b30d6814c9a153d70e91808dfdc4dbd83a60abdd43effc6454b0daae5e4"
+      }
+    },
+    {
+      "id": "ES_05",
+      "language": "es",
+      "prompt": "Solo para confirmar, querés reservar un turno para dos personas mañana a las diez y media. ¿Es correcto?",
+      "seed": 2026102911,
+      "attempt": 1,
+      "passed_gate": true,
+      "roundtrip_asr_bf16_model": {
+        "A_BF16": "Solo para confirmar, querés reservar un turno para dos personas mañana a las diez y media. ¿Es correcto?",
+        "B_GPTQPro": "Solo para confirmar, ¿querés reservar un turno para dos personas mañana a las diez y media? ¿Es correcto?"
+      },
+      "roundtrip_word_recall": {
+        "bf16": 1.0,
+        "gptq_pro": 1.0
+      },
+      "audio_duration_s": {
+        "bf16": 7.04,
+        "gptq_pro": 6.72
+      },
+      "generation_s": {
+        "bf16": 1.763,
+        "gptq_pro": 1.767
+      },
+      "files": {
+        "ab_mp3": "ES_05_AB_BF16_then_GPTQPro.mp3",
+        "ab_ogg": "ES_05_AB_BF16_then_GPTQPro.ogg",
+        "bf16_ogg": "ES_05_A_BF16.ogg",
+        "gptq_pro_ogg": "ES_05_B_GPTQPro.ogg"
+      },
+      "sha256": {
+        "ab_mp3": "5ce69428bd8049524e0ca2c553c102fb35b393385ca7e491713c7654bed4b2e3",
+        "ab_ogg": "6fdf111b90f8a1fa5c34a47ec03c70bdcbf4e2d126d8a5d57d456b25a17c8cc7",
+        "bf16_ogg": "81294b67d759671a8a3718998491c814f9848b6d6f52f7b13d0c83446c2335d6",
+        "gptq_pro_ogg": "19ade8b9a0465c35359499c346fd49bf5316d1a0946c045dbcc0052bf1938c21"
+      }
+    }
+  ]
+}
