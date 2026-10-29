@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#supported-models">Supported models</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#native-inference">Native inference</a> ·
   <a href="#current-state">Current state</a> ·
@@ -39,6 +40,151 @@ GPTQ-Pro is an experimental fork of
 **symmetric INT4 GPTQ and native-qweight CUDA execution**. Distribution/import
 names remain `GPTQModel` / `gptqmodel` for compatibility. External vLLM/Marlin
 examples are not additional inference backends bundled by this fork.
+
+## Supported models
+
+GPTQ-Pro includes architecture routes for **Qwen, Llama, Gemma, Mistral,
+DeepSeek, GLM, MiniMax, Phi, GPT-OSS and more**, plus a separate
+**LFM3-Audio-2B INT4 speech workflow**.
+
+### Project workflows and tested releases
+
+| Model / family | Available workflow | Status |
+| --- | --- | --- |
+| **LFM3-Audio-2B** | [Speech inference examples](examples/lfm3_audio/README.md) · [INT4 release and listening samples](https://huggingface.co/groxaxo/LFM3-Audio-2B-GPTQ-Pro-INT4) | Published selective INT4 overlay, tested on RTX 3090. Requires the original BF16 model and custom loader; separate from the general model registry. |
+| **Qwen3.5-9B** | [Quality recipe and experiment](docs/VALIDATED_QUALITY_DEFAULT.md) | Recorded controlled decoder-quality comparison; results apply to that experiment. |
+| **Qwen3.5 / Qwen3.6 dense 27B** | [Dense driver](scripts/quant_qwen3_5_27b_gptqpro.py) · [routing](docs/QWEN35_QWEN36.md) | Implemented multimodal architecture route; each exported checkpoint needs reload and workload checks. |
+| **Qwen3.5 / Qwen3.6 dense text** | [Text driver](scripts/quant_qwen36_obliterated_gptqpro.py) | Implemented separate flat text-only route; model layout must match. |
+| **Qwen3.5 / Qwen3.6 MoE** | [MoE driver](scripts/quant_qwen3_5_moe.py) | Generic MoE route; mixed expert policies and external consumers need separate checks. |
+| **Qwen3.8 dense 27B** | [Release driver](scripts/quant_qwen3_8_27b_gptqpro.py) · [guide](docs/QWEN38.md) | Exact release-signature checks through the Qwen3.5 architecture. Full workload qualification remains open; see the [nightly preset blocker](docs/STATUS.md#b2-qwen38-nightly-preset-mismatch). |
+| **Qwen3.6 Heretic selective mixed precision** | [Native recovery](docs/qwen36-native-qualification.md) | Recorded native reload and 5/6 functional cases; deployment remains unqualified. |
+
+### Architecture coverage
+
+The [loader registry](gptqmodel/models/auto.py) contains the following families.
+**Registered** means a source definition exists. Every size, fine-tune, saved
+checkpoint and multimodal task still needs its own compatibility and quality checks.
+
+| Family | Registered variants |
+| --- | --- |
+| **Qwen** | Qwen, Qwen2, Qwen3; Qwen2/3 MoE; Qwen3-Next; Qwen2-VL, Qwen2.5-VL/Omni, Qwen3-VL/Omni-MoE; Qwen3.5 dense and MoE with text and multimodal layouts. |
+| **Llama** | Llama, Llama 4, Mllama; shared-layout routes for Cohere/Cohere2, Yi, LongLlama, StableLM, Granite, OLMo2 and Seed-OSS. |
+| **Gemma** | Gemma, Gemma 2, Gemma 3 and Gemma 4; text and conditional-generation variants where registered. |
+| **Mistral** | Mistral, Mixtral, Mistral 3 and Voxtral. |
+| **DeepSeek / Kimi** | DeepSeek V2, DeepSeek V3 and Kimi K2. |
+| **GLM** | ChatGLM, GLM/GLM4, GLM4V, GLM4 MoE, GLM4 MoE Lite and GLM MoE DSA. |
+| **MiniMax / MiMo / Liquid** | MiniMax M2, MiMo and LFM2 MoE. LFM3-Audio uses the separate workflow above. |
+| **Phi / GPT** | Phi, Phi 3, Phi 4 multimodal, Phi MoE; GPT-2, GPT-J, GPT-Neo, GPT-NeoX, GPT-BigCode and GPT-OSS. |
+| **Additional families** | Apertus, AFMoE, Baichuan, Bailing MoE, Bloom, Brumby, CodeGen, DBRX, DeciLM, Dots1, Dream, ERNIE 4.5, EXAONE, Falcon, Granite MoE Hybrid, GRIN MoE, Hymba, Instella, InternLM, Klear, LLaDA2 MoE, LLaVA-Qwen2, LongCat-Flash, Marin, MiniCPM, MobileLLM, MOSS, MPT, Nemotron, OPT, Ovis, Pangu, StarCoder2, TeleChat and Xverse. |
+
+<details>
+<summary><strong>Full registry: exact model_type keys and linked definitions</strong></summary>
+
+Match the checkpoint's `config.json` `model_type` to the table below.
+Qwen3.5 entries require a compatible Transformers version. Qwen3.6/3.8
+release names use their actual Qwen3.5-family layout; there is no
+`qwen3_8` registry alias.
+
+| Registered model_type | Definition / route |
+| --- | --- |
+| `afmoe` | [AfMoeQModel](gptqmodel/models/definitions/afmoe.py) |
+| `apertus` | [ApertusQModel](gptqmodel/models/definitions/apertus.py) |
+| `baichuan` | [BaiChuanQModel](gptqmodel/models/definitions/baichuan.py) |
+| `bailing_moe` | [BailingMoeQModel](gptqmodel/models/definitions/bailing_moe.py) |
+| `bloom` | [BloomQModel](gptqmodel/models/definitions/bloom.py) |
+| `brumby` | [BrumbyQModel](gptqmodel/models/definitions/brumby.py) |
+| `chatglm` | [ChatGLMQModel](gptqmodel/models/definitions/chatglm.py) |
+| `codegen` | [CodeGenQModel](gptqmodel/models/definitions/codegen.py) |
+| `cohere`, `cohere2`, `gemma`, `granite`, `llama`, `longllama`, `mistral`, `olmo2`, `seed_oss`, `stablelm`, `stablelm_epoch`, `yi` | [LlamaQModel](gptqmodel/models/definitions/llama.py) |
+| `dbrx` | [DbrxQModel](gptqmodel/models/definitions/dbrx.py) |
+| `dbrx_converted` | [DbrxConvertedQModel](gptqmodel/models/definitions/dbrx_converted.py) |
+| `deci`, `nemotron-nas` | [DeciLMQModel](gptqmodel/models/definitions/decilm.py) |
+| `deepseek_v2` | [DeepSeekV2QModel](gptqmodel/models/definitions/deepseek_v2.py) |
+| `deepseek_v3`, `kimi_k2` | [DeepSeekV3QModel](gptqmodel/models/definitions/deepseek_v3.py) |
+| `dots1` | [Dots1QModel](gptqmodel/models/definitions/dots1.py) |
+| `dream` | [DreamQModel](gptqmodel/models/definitions/dream.py) |
+| `ernie4_5` | [Ernie4_5QModel](gptqmodel/models/definitions/ernie4_5.py) |
+| `ernie4_5_moe` | [Ernie4_5_MoeQModel](gptqmodel/models/definitions/ernie4_5_moe.py) |
+| `exaone` | [ExaOneQModel](gptqmodel/models/definitions/exaone.py) |
+| `exaone4` | [Exaone4QModel](gptqmodel/models/definitions/exaone4.py) |
+| `falcon`, `refinedWeb`, `refinedWebModel` | [RwgQModel](gptqmodel/models/definitions/rw.py) |
+| `falcon_h1` | [FalconH1QModel](gptqmodel/models/definitions/falcon_h1.py) |
+| `gemma2` | [Gemma2QModel](gptqmodel/models/definitions/gemma2.py) |
+| `gemma3` | [Gemma3ForConditionalGenerationGPTQ](gptqmodel/models/definitions/gemma3.py) |
+| `gemma3_text` | [Gemma3QModel](gptqmodel/models/definitions/gemma3.py) |
+| `gemma4` | [Gemma4ForConditionalGenerationGPTQ](gptqmodel/models/definitions/gemma4.py) |
+| `gemma4_text` | [Gemma4TextQModel](gptqmodel/models/definitions/gemma4.py) |
+| `glm`, `glm4` | [GlmQModel](gptqmodel/models/definitions/glm.py) |
+| `glm4_moe` | [GLM4MoEGPTQ](gptqmodel/models/definitions/glm4_moe.py) |
+| `glm4_moe_lite` | [Glm4MoeLiteQModel](gptqmodel/models/definitions/glm4_moe_lite.py) |
+| `glm4v` | [Glm4vGPTQ](gptqmodel/models/definitions/glm4v.py) |
+| `glm_moe_dsa` | [GlmMoeDsaQModel](gptqmodel/models/definitions/glm_moe_dsa.py) |
+| `gpt2` | [GPT2QModel](gptqmodel/models/definitions/gpt2.py) |
+| `gpt_bigcode` | [GptBigCodeQModel](gptqmodel/models/definitions/gpt_bigcode.py) |
+| `gpt_neo` | [GptNeoQModel](gptqmodel/models/definitions/gpt_neo.py) |
+| `gpt_neox` | [GPTNeoXQModel](gptqmodel/models/definitions/gpt_neox.py) |
+| `gpt_oss` | [GPTOSSGPTQ](gptqmodel/models/definitions/gpt_oss.py) |
+| `gpt_pangu` | [PanguAlphaQModel](gptqmodel/models/definitions/pangu_alpha.py) |
+| `gptj` | [GptJQModel](gptqmodel/models/definitions/gptj.py) |
+| `granitemoehybrid` | [GraniteMoeHybridQModel](gptqmodel/models/definitions/granitemoehybrid.py) |
+| `grinmoe` | [GrinMoeQModel](gptqmodel/models/definitions/grinmoe.py) |
+| `hymba` | [HymbaQModel](gptqmodel/models/definitions/hymba.py) |
+| `instella` | [InstellaQModel](gptqmodel/models/definitions/instella.py) |
+| `internlm` | [InternLMQModel](gptqmodel/models/definitions/internlm.py) |
+| `internlm2` | [InternLM2QModel](gptqmodel/models/definitions/internlm2.py) |
+| `klear` | [KlearQModel](gptqmodel/models/definitions/klear.py) |
+| `lfm2_moe` | [LFM2MoeQModel](gptqmodel/models/definitions/lfm2_moe.py) |
+| `llada2_moe` | [LLaDA2MoeQModel](gptqmodel/models/definitions/llada2.py) |
+| `llama4` | [Llama4QModel](gptqmodel/models/definitions/llama4.py) |
+| `llava_qwen2` | [LlavaQwen2QModel](gptqmodel/models/definitions/llava_qwen2.py) |
+| `longcat_flash` | [LongCatFlashQModel](gptqmodel/models/definitions/longcat_flash.py) |
+| `marin`, `qwen3` | [Qwen3QModel](gptqmodel/models/definitions/qwen3.py) |
+| `mimo` | [MimoQModel](gptqmodel/models/definitions/mimo.py) |
+| `minicpm` | [MiniCPMGPTQ](gptqmodel/models/definitions/minicpm.py) |
+| `minicpm3` | [MiniCpm3QModel](gptqmodel/models/definitions/minicpm3.py) |
+| `minicpmo` | [MiniCPMOQModel](gptqmodel/models/definitions/minicpm_o.py) |
+| `minicpmv` | [MiniCPMVQModel](gptqmodel/models/definitions/minicpm_v.py) |
+| `minimax`, `minimax_m2` | [MiniMaxM2GPTQ](gptqmodel/models/definitions/minimax_m2.py) |
+| `mistral3` | [Mistral3GPTQ](gptqmodel/models/definitions/mistral3.py) |
+| `mixtral` | [MixtralQModel](gptqmodel/models/definitions/mixtral.py) |
+| `mllama` | [MLlamaQModel](gptqmodel/models/definitions/mllama.py) |
+| `mobilellm` | [MobileLLMQModel](gptqmodel/models/definitions/mobilellm.py) |
+| `moss` | [MossQModel](gptqmodel/models/definitions/moss.py) |
+| `mpt` | [MptQModel](gptqmodel/models/definitions/mpt.py) |
+| `nemotron_h` | [NemotronHQModel](gptqmodel/models/definitions/nemotron_h.py) |
+| `opt` | [OptQModel](gptqmodel/models/definitions/opt.py) |
+| `ovis` | [OvisQModel](gptqmodel/models/definitions/ovis.py) |
+| `ovis2` | [Ovis2QModel](gptqmodel/models/definitions/ovis2.py) |
+| `phi` | [PhiQModel](gptqmodel/models/definitions/phi.py) |
+| `phi3` | [Phi3QModel](gptqmodel/models/definitions/phi3.py) |
+| `phi4mm` | [Phi4MMGPTQ](gptqmodel/models/definitions/phi4.py) |
+| `phimoe` | [PhiMoEGPTQForCausalLM](gptqmodel/models/definitions/phi3.py) |
+| `qwen` | [QwenQModel](gptqmodel/models/definitions/qwen.py) |
+| `qwen2` | [Qwen2QModel](gptqmodel/models/definitions/qwen2.py) |
+| `qwen2_5_omni` | [Qwen2_5_OmniGPTQ](gptqmodel/models/definitions/qwen2_5_omni.py) |
+| `qwen2_5_vl`, `qwen2_5_vl_text` | [Qwen2_5_VLQModel](gptqmodel/models/definitions/qwen2_5_vl.py) |
+| `qwen2_moe` | [Qwen2MoeQModel](gptqmodel/models/definitions/qwen2_moe.py) |
+| `qwen2_vl`, `qwen2_vl_text` | [Qwen2VLQModel](gptqmodel/models/definitions/qwen2_vl.py) |
+| `qwen3_5` | [Qwen3_5QModel](gptqmodel/models/definitions/qwen3_5.py) |
+| `qwen3_5_moe` | [Qwen3_5_MoeQModel](gptqmodel/models/definitions/qwen3_5_moe.py) |
+| `qwen3_5_moe_text` | [Qwen3_5_MoeTextQModel](gptqmodel/models/definitions/qwen3_5_moe_text.py) |
+| `qwen3_5_text` | [Qwen3_5TextQModel](gptqmodel/models/definitions/qwen3_5_text.py) |
+| `qwen3_moe` | [Qwen3MoeQModel](gptqmodel/models/definitions/qwen3_moe.py) |
+| `qwen3_next` | [Qwen3NextGPTQ](gptqmodel/models/definitions/qwen3_next.py) |
+| `qwen3_omni_moe` | [Qwen3OmniMoeGPTQ](gptqmodel/models/definitions/qwen3_omni_moe.py) |
+| `qwen3_vl` | [Qwen3_VLQModel](gptqmodel/models/definitions/qwen3_vl.py) |
+| `starcoder2` | [Starcoder2QModel](gptqmodel/models/definitions/starcoder2.py) |
+| `telechat` | [TeleChat2QModel](gptqmodel/models/definitions/telechat2.py) |
+| `voxtral` | [VoxtralGPTQ](gptqmodel/models/definitions/voxtral.py) |
+| `xverse` | [XverseQModel](gptqmodel/models/definitions/xverse.py) |
+
+</details>
+
+**Native runtime:** Linux, NVIDIA CUDA (compute capability 8.0+), symmetric
+INT4 GPTQ, compatible packed shapes and `desc_act=False`.
+GGUF, AWQ, FP8, CPU and Apple MPS inference are outside this native backend.
+See the [runtime contract](#runtime-contract) and
+[qualification status](docs/STATUS.md) for artifact-specific limits.
 
 ## Why GPTQ-Pro
 
