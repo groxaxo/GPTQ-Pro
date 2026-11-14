@@ -51,6 +51,7 @@ DeepSeek, GLM, MiniMax, Phi, GPT-OSS and more**, plus a separate
 
 | Model / family | Available workflow | Status |
 | --- | --- | --- |
+| **ZONOS3-Mini** | [Selective INT4 overlay workflow](examples/zonos3_mini/README.md) | Experimental custom PyTorch reference adapter. Real checkpoint shape and CPU routing verified; full CUDA quantization / TTS listening unqualified. Not registered as GPTQModel or SGLang model. |
 | **LFM3-Audio-2B** | [Speech inference examples](examples/lfm3_audio/README.md) · [INT4 release and listening samples](https://huggingface.co/groxaxo/LFM3-Audio-2B-GPTQ-Pro-INT4) | Published selective INT4 overlay, tested on RTX 3090. Requires the original BF16 model and custom loader; separate from the general model registry. |
 | **Qwen3.5-9B** | [Quality recipe and experiment](docs/VALIDATED_QUALITY_DEFAULT.md) | Recorded controlled decoder-quality comparison; results apply to that experiment. |
 | **Qwen3.5 / Qwen3.6 dense 27B** | [Dense driver](scripts/quant_qwen3_5_27b_gptqpro.py) · [routing](docs/QWEN35_QWEN36.md) | Implemented multimodal architecture route; each exported checkpoint needs reload and workload checks. |
