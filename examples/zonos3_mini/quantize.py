@@ -57,6 +57,11 @@ def load_calibration(path: Path, config, limit: int):
             conditions = {int(k): int(v) for k, v in sample.get("condition_rows", {}).items()}
             if len(conditions) not in (0, config.condition_count):
                 raise ValueError("Condition rows must be absent or complete")
+            if any(i < 0 or i >= len(ids) for i in (*speakers, *conditions)):
+                raise ValueError("Speaker/condition row index outside calibration sequence")
+            for table_index, (_, value) in enumerate(sorted(conditions.items())):
+                if not 0 <= value <= config.condition_bucket_counts[table_index]:
+                    raise ValueError("Condition bucket outside embedding table")
             samples.append((ids, speakers, conditions))
             if limit > 0 and len(samples) >= limit:
                 break

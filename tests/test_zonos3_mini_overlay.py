@@ -130,3 +130,34 @@ def test_reference_full_forward_and_packed_standin_parity(model):
             release_layer_weights(model, layer)
         converted = model(ids, LMCache()).logits
         torch.testing.assert_close(teacher, converted, atol=1e-6, rtol=1e-5)
+
+
+def test_calibration_jsonl_validation_and_capture(model, tmp_path):
+    from quantize import ActivationCapture, load_calibration
+
+    path = tmp_path / "tokens.jsonl"
+    # 2 audio codebooks and one text token column.
+    row = {
+        "ids": [[129, 129, 2], [129, 129, 17], [129, 129, 18], [129, 129, 3]],
+        "speaker_rows": {"0": [0] * model.config.speaker_embedding_dim},
+        "condition_rows": {"0": 0, "1": 1, "2": 2},
+    }
+    import json
+
+    path.write_text("".join(json.dumps(row) + "\n" for _ in range(4)))
+    samples = load_calibration(path, model.config, 0)
+    assert len(samples) == 4
+    assert len(samples[0][1]) == 1
+
+    capture = ActivationCapture(["layers.1.feed_forward.latent_down"], max_rows=3)
+    inp = torch.randn(10, 64)
+    capture("layers.1.feed_forward.latent_down", inp)
+    capture("layers.1.feed_forward.latent_down", inp)
+    capture("unrelated", inp)
+    assert capture.counts["layers.1.feed_forward.latent_down"] == 3
+    assert capture.data("layers.1.feed_forward.latent_down", "cpu").shape == (3, 64)
+
+    row["condition_rows"] = {"0": 999, "1": 1, "2": 2}
+    path.write_text("".join(json.dumps(row) + "\n" for _ in range(4)))
+    with pytest.raises(ValueError, match="Condition bucket"):
+        load_calibration(path, model.config, 0)

@@ -12,7 +12,7 @@ Verified against the source ZONOS3-Mini checkpoint: **11 layers, 64 experts, 1,3
 
 ## Requirements
 
-Linux; NVIDIA compute capability 8.0+; working native CUDA GPTQ-Pro installation; ZONOS3-Mini reference Python library and its pinned source assets. You need an **unoccupied** GPU for calibration/quantization. Do not stop active workloads. The original model.pth, params.json and tokenizer remain mandatory when loading an overlay. The loader validates SHA256 of model.pth and params.json to prevent a silent source mismatch. Real TTS inputs are essential to excite MoE experts; random tokens are not a valid substitute.
+Linux; NVIDIA compute capability 8.0+; working native CUDA GPTQ-Pro installation; ZONOS3-Mini reference Python library (including zyphra-textnorm==0.1.0) and its pinned source assets. You need an **unoccupied** GPU for calibration/quantization. Do not stop active workloads. The original model.pth, params.json and tokenizer remain mandatory when loading an overlay. The loader validates SHA256 of model.pth and params.json to prevent a silent source mismatch. Real TTS inputs are essential to excite MoE experts; random tokens are not a valid substitute.
 
 ## 1. Prepare environment
 
@@ -26,7 +26,7 @@ python -c 'from zonos3.reference.lm import Zonos3LM; from gptqmodel import Quant
 
 ## 2. Prepare calibration requests
 
-Supply JSONL with **valid ZONOS3-Mini GenerateRequest JSON objects** that successfully work with the upstream reference synthesis server (with real voice embeddings/reference clips). Vary speakers, EN/ES, utterance lengths and expressive styles. Use separate calibration and held-out sets; keep voice/speaker files PRIVATE. Request files with accent adapters are deliberately rejected by this helper.
+Supply JSONL with **valid ZONOS3-Mini GenerateRequest JSON objects** (language codes such as en_us, en_gb and es, not en) that successfully work with the upstream reference synthesis server (with real voice embeddings/reference clips). Vary speakers, EN/ES, utterance lengths and expressive styles. Use separate calibration and held-out sets; keep voice/speaker files PRIVATE. Request files with accent adapters are deliberately rejected by this helper.
 
 ```bash
 python examples/zonos3_mini/make_calibration.py \
@@ -82,3 +82,5 @@ PYTHONPATH="$PWD:$HOME/zonos3-mini/model/src" \
 Held-out evaluation reports teacher/INT4 logit NMSE, KL and argmax agreement. **Required before production:** matched generated WAVs, blind EN/ES listening, speaker drift/prosody checks, end-to-end ZAC decode, measured allocated/reserved VRAM, real-time factor and TTS throughput. Passing CPU adapter tests does not certify native CUDA packing, complete quantization or user-perceived speech quality.
 
 The output is an experimental, pinned-source BF16+INT4 overlay, not a standalone downloadable 4-bit model.
+
+Local smoke: the original 11-layer BF16 model successfully built and generated a 21-row token sequence on CPU from a valid en_us embedding-mode request. Four independent synthetic requests yielded 68 replayable token rows; the layer-1 capture intercepted 29/131 projections with that one short sample. This checks the replay path, **not** expert coverage for quantization or speech quality.
