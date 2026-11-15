@@ -209,3 +209,35 @@ This is an **overlay**, not a standalone checkpoint, a drop-in Transformers
 a compatible native CUDA GPTQ-Pro installation, plus Zyphra's original
 ZONOS3 reference model and codec. The external BF16 source weights are not
 redistributed in the overlay.
+
+## Actual SGLang-Omni support (Ampere INT4/BF16 MoE experts)
+
+ZONOS3-Mini is served by SGLang-Omni, but its normal fused MoE kernel
+expects dense BF16 expert tensors. This repository now supplies
+[sglang_omni_moe.py](sglang_omni_moe.py), reading native GPTQ-Pro INT4 g64
+packed qweight/qzeros/scales. It preserves selected original BF16 experts
+and routes top-k experts entirely on GPU, compatible with SGLang prefill
+and decode CUDA graphs without expanding all Q4 expert weights into BF16.
+
+The opt-in model loading hook is maintained in
+[groxaxo/sglang-omni](https://github.com/groxaxo/sglang-omni).
+Use a compatible SGLang-Omni environment, with both source checkouts
+visible on PYTHONPATH:
+
+~~~bash
+export ZONOS3_GPTQPRO_OVERLAY=groxaxo/ZONOS3-Mini-GPTQ-Pro-INT4
+export ZONOS3_GPTQPRO_BASE=/path/to/ZONOS3-Mini/lm/zonos3_mini
+export PYTHONPATH=/path/to/GPTQ-Pro:/path/to/sglang-omni:$PYTHONPATH
+sgl-omni serve --model-path /path/to/ZONOS3-Mini   --host 127.0.0.1 --port 18082   --tts_engine.gpu_memory_fraction 0.65   --tts_engine.factory.max_running_requests 2   --tts_engine.engine.cuda_graph_max_bs 2
+~~~
+
+On one RTX3090, five matched English/Spanish prompts all generated valid
+waveforms, both servers were healthy, and all 43 prefill plus both decode
+CUDA graphs captured. Median warm RTF: INT4 0.0245 (40.8x real-time),
+BF16 0.0223 (44.8x). INT4 used ~684 MiB less GPU process memory but
+was 9.75% slower. See the [SGLang benchmark and limitations]
+(../../docs/verification/zonos3-mini-sglang-omni-20261115.md).
+
+The original BF16 checkpoint and codec are still required, only TP1 is
+supported, and this is a custom SGLang-Omni ZONOS3 adapter rather than a
+stock SGLang-core quantization format.
