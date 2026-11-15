@@ -134,3 +134,24 @@ Dense-path insufficiency, bad native parity and poor quantization fit remain
 hard errors. A complete 11-layer *mixed precision overlay* does not mean all
 1,317 eligible projections became INT4. Report the actual quantized/preserved
 counts and measured memory/performance, and complete speech-quality A/B tests.
+
+## Optional quality-first second-pass selection (preserve high fit-NMSE outliers)
+
+Some GDN/attention output projections have higher quantization reconstruction
+error than MoE expert matrices. Instead of loosening the held-out KL gate, derive
+a **new** overlay in which projections with fit NMSE above **0.003** (0.3%
+relative output MSE) retain their original BF16 values. The source BF16 model
+is already mandatory. This is a deterministic selection from original fit
+measurements; it does **not** need the held-out evaluation set to select weights.
+
+~~~bash
+python examples/zonos3_mini/refine_overlay.py \
+  --source-manifest ./private/zonos3-gptqpro-int4-g64/manifest.json \
+  --out ./private/zonos3-gptqpro-quality-protected \
+  --preserve-above-fit-nmse 0.003
+~~~
+
+The utility never overwrites the original quantization. It recomputes safetensors
+hashes, updates the manifest, and lists every newly preserved BF16 projection
+by name, shape and original fit NMSE. Assess the derived checkpoint on an
+independent held-out TTS corpus: **never treat small fit-NMSE as audio MOS**.

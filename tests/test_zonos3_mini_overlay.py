@@ -230,3 +230,40 @@ def test_dense_preserved_projection_after_source_release(model):
         assert model.layers[0].attention.wo.weight.is_meta
         out = model._gdn(x, 0, zonos.LMCache())
         torch.testing.assert_close(teacher, out, atol=1e-6, rtol=1e-6)
+
+
+def test_refinement_reclassifies_outliers_and_rehashes_shards(tmp_path):
+    import json
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+    from overlay_runtime import FORMAT, sha256_file
+    from refine_overlay import refine_overlay
+
+    root = tmp_path / "original"
+    root.mkdir()
+    shard = root / "layer_00.safetensors"
+    save_file({"layers.0.attention.wo.qweight": torch.ones(2, 4, dtype=torch.int32),
+               "layers.0.feed_forward.w_in.qweight": torch.ones(8, 16, dtype=torch.int32)}, str(shard))
+    manifest = {
+        "format": FORMAT, "bits": 4, "group_size": 64,
+        "sym": True, "desc_act": False, "layers": [{
+            "index": 0, "file": shard.name, "sha256": sha256_file(shard),
+            "modules": [
+                {"name": "layers.0.attention.wo", "in_features": 64,
+                 "out_features": 64, "fit_nmse": 0.0042, "calibration_rows": 128},
+                {"name": "layers.0.feed_forward.w_in", "in_features": 64,
+                 "out_features": 128, "fit_nmse": 0.0002, "calibration_rows": 128},
+            ], "preserved": [],
+        }],
+    }
+    source = root / "manifest.json"
+    source.write_text(json.dumps(manifest))
+    result = refine_overlay(source, tmp_path / "refined", 0.003)
+    row = result["layers"][0]
+    assert len(row["modules"]) == 1
+    assert len(row["preserved"]) == 1
+    assert row["preserved"][0]["name"] == "layers.0.attention.wo"
+    with safe_open(str(tmp_path / "refined" / shard.name), framework="pt", device="cpu") as f:
+        assert list(f.keys()) == ["layers.0.feed_forward.w_in.qweight"]
+    with pytest.raises(FileExistsError):
+        refine_overlay(source, tmp_path / "refined", 0.003)
