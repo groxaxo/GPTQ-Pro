@@ -301,3 +301,30 @@ def test_refinement_expert_only_policy(tmp_path):
         "layers.1.feed_forward.experts.gate_up_proj.0"
     ]
     assert l["preserved"][0]["reason"] == "architectural_fidelity_preserve_nonexpert"
+
+
+
+def test_refinement_all_bf16_layer_has_valid_empty_safetensors(tmp_path):
+    import json
+    from safetensors.torch import save_file
+    from safetensors import safe_open
+    from overlay_runtime import FORMAT, sha256_file
+    from refine_overlay import refine_overlay
+
+    root=tmp_path / "original"
+    root.mkdir()
+    shard=root/"layer_00.safetensors"
+    save_file({"layers.0.attention.wo.qweight":torch.ones(2,2,dtype=torch.int32)},str(shard))
+    data={"format":FORMAT,"bits":4,"group_size":64,"sym":True,"desc_act":False,
+          "layers":[{"index":0,"file":shard.name,"sha256":sha256_file(shard),
+                     "modules":[{"name":"layers.0.attention.wo","in_features":64,"out_features":64,
+                                 "fit_nmse":0.0001,"calibration_rows":200}],"preserved":[]}]}
+    p=root/"manifest.json"
+    p.write_text(json.dumps(data))
+    result=refine_overlay(p,tmp_path/"refined",0.003,preserve_nonexpert=True)
+    assert not result["layers"][0]["modules"]
+    assert len(result["layers"][0]["preserved"]) == 1
+    new_shard=tmp_path/"refined"/shard.name
+    with safe_open(str(new_shard),framework="pt",device="cpu") as f:
+        assert list(f.keys()) == []
+    assert result["layers"][0]["sha256"]==sha256_file(new_shard)

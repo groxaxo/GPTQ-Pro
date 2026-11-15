@@ -62,15 +62,16 @@ def refine_overlay(source: Path, out: Path, max_fit_nmse: float, *,
                     "fit_nmse": value,
                 })
         allowed = {e["name"] for e in keep}
-        if not allowed:
-            raise RuntimeError(f"No packed projections remain in {part['file']}")
+        # Layer 0 has no MoE experts. The experts-only policy legitimately
+        # preserves every layer-0 projection at BF16; an empty safetensors file
+        # is valid and its SHA256 is still checked by the loader.
         with safe_open(str(old_shard), framework="pt", device="cpu") as stream:
             all_keys = set(stream.keys())
             selected = {
                 key: stream.get_tensor(key).cpu().contiguous()
                 for key in all_keys if any(key.startswith(name + ".") for name in allowed)
             }
-            if not selected:
+            if not selected and allowed:
                 raise RuntimeError(f"Missing packed state: {part['file']}")
             if any(not any(k.startswith(name + ".") for k in all_keys) for name in allowed):
                 raise RuntimeError(f"No packed tensors for one or more projection(s): {part['file']}")
