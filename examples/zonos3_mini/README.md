@@ -175,3 +175,37 @@ also remain BF16. The original full model is still needed to reload. This
 policy is expected to be a better quality/memory trade-off than aggressively
 quantizing structurally sensitive, low-parameter projections. **Validate the
 complete TTS model on separate long-sequence holdouts** before release.
+
+
+## Published ZONOS3-Mini model and full end-to-end validation
+
+The **experimental, complete 11-layer mixed-precision GPTQ-Pro overlay**
+is published at [groxaxo/ZONOS3-Mini-GPTQ-Pro-INT4](https://huggingface.co/groxaxo/ZONOS3-Mini-GPTQ-Pro-INT4)
+with a versioned manifest, 11 packed safetensors shards, and matched BF16 vs
+INT4 English/Spanish speech samples. Its exact architecture source and original
+Zyphra BF16 checkpoint are still required at runtime.
+
+- 1,005 MoE expert projections native INT4 g64; 312 projections BF16 (including
+  all non-expert linears for conservative speech fidelity)
+- 11 of 11 layers processed; all 11 layer-shard SHA256 values validated
+- Held-out logit KL: 0.018779 on 24 standard and 0.024353 on 24 longer prompts;
+  both passed NMSE/KL numerical acceptance
+- RTX 3090: 1.651 to 0.858 GiB LM-only allocated VRAM (-48.0%); 2.272 to
+  1.479 GiB peak TTS allocated VRAM (-34.9%); **16.5% slower** warm TTS
+- Ten BF16/INT4 speech comparisons (five English, five Spanish) passed waveform
+  generation; short-clip ASR proxy found some extra word errors, especially
+  Spanish. Blind listening/MOS and production deployment remain unqualified
+
+See [full verification evidence](../../docs/verification/zonos3-mini-full-20261115.md).
+
+The supported CLI provides a normal Zonos3 reference synthesis entrypoint:
+
+~~~bash
+python examples/zonos3_mini/infer_published.py   --base /path/to/original/lm/zonos3_mini   --overlay-repo groxaxo/ZONOS3-Mini-GPTQ-Pro-INT4   --speaker-embedding /path/to/upstream/voice.embedding.npy   --asset-root /path/to/original/ZONOS3-Mini/model-tree   --text "Hello from the native GPTQ-Pro INT4 model."   --language en_us --seed 42 --max-tokens 180 --out sample.wav
+~~~
+
+This is an **overlay**, not a standalone checkpoint, a drop-in Transformers
+`AutoModel`, or a production-optimized serving implementation. It requires
+a compatible native CUDA GPTQ-Pro installation, plus Zyphra's original
+ZONOS3 reference model and codec. The external BF16 source weights are not
+redistributed in the overlay.
