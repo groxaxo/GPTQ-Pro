@@ -209,3 +209,24 @@ def test_sparse_expert_preservation_after_original_tensor_release(model):
         torch.testing.assert_close(expected_expert, preserved, rtol=0, atol=0)
         actual = model._feed_forward(x, 1)
         torch.testing.assert_close(teacher, actual, atol=1e-6, rtol=1e-6)
+
+
+
+def test_dense_preserved_projection_after_source_release(model):
+    x = torch.randn(6, model.config.dim)
+    target = "layers.0.attention.wo"
+    with torch.inference_mode():
+        teacher = model._gdn(x, 0, zonos.LMCache())
+        enable_dispatch(model)
+        for name in candidate_names(model, 0):
+            if name == target:
+                register_preserved(model, name)
+            else:
+                src = weight_for(model, name)
+                standin = nn.Linear(src.shape[1], src.shape[0], bias=False)
+                standin.weight.copy_(src)
+                register_module(model, name, standin)
+        release_layer_weights(model, 0)
+        assert model.layers[0].attention.wo.weight.is_meta
+        out = model._gdn(x, 0, zonos.LMCache())
+        torch.testing.assert_close(teacher, out, atol=1e-6, rtol=1e-6)

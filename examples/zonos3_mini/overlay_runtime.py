@@ -124,11 +124,14 @@ def _patched_lin(self, name, x, weight, bias=None):
     if callback is not None:
         callback(name, x)
     key = self._gptqpro_index.get(name)
-    if key is None:
+    preserved_key = self._gptqpro_preserved_index.get(name)
+    if key is None and preserved_key is None:
         return self._gptqpro_original_lin(name, x, weight, bias)
     if bias is not None:
-        raise ValueError(f"Unexpected biased quantized projection: {name}")
-    out = _native_forward(self, self._gptqpro_modules[key], x)
+        raise ValueError(f"Unexpected biased quantized/preserved projection: {name}")
+    module = (self._gptqpro_modules[key] if key is not None
+              else self._gptqpro_preserved_modules[preserved_key])
+    out = _native_forward(self, module, x)
     return out if self._accents is None else self._accents.linear(name, x, out)
 
 
@@ -203,10 +206,17 @@ def register_module(lm, name: str, module: nn.Module) -> None:
 
 
 def register_preserved(lm, name: str) -> None:
-    """Retain just one low-coverage source expert at BF16, without its full 3D parent tensor."""
+    """Retain any explicitly allowlisted original projection at BF16 after a quality gate."""
     enable_dispatch(lm)
-    if ".feed_forward.experts." not in name:
-        raise ValueError(f"BF16 preservation only supports MoE experts: {name}")
+    parts = name.split(".")
+    if len(parts) < 4 or parts[0] != "layers":
+        raise ValueError(f"Not a ZONOS3-Mini layer projection: {name}")
+    try:
+        layer = int(parts[1])
+    except ValueError as e:
+        raise ValueError(f"Not a valid ZONOS3-Mini layer: {name}") from e
+    if name not in candidate_names(lm, layer):
+        raise ValueError(f"Cannot preserve non-allowlisted projection: {name}")
     if name in lm._gptqpro_index or name in lm._gptqpro_preserved_index:
         raise RuntimeError(f"Overlay entry already installed: {name}")
     source = weight_for(lm, name)
@@ -288,8 +298,6 @@ def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, r
             raise ValueError(f"Missing, duplicated or unexpected layer {i} projections")
         for item in preserved:
             name = item["name"]
-            if ".feed_forward.experts." not in name:
-                raise ValueError(f"Only source MoE experts may remain BF16: {name}")
             if (item["in_features"], item["out_features"]) != known[name]:
                 raise ValueError(f"BF16 expert source shape mismatch: {name}")
         expected_file = f"layer_{i:02d}.safetensors"
