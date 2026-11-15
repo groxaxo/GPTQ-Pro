@@ -161,3 +161,20 @@ def test_calibration_jsonl_validation_and_capture(model, tmp_path):
     path.write_text("".join(json.dumps(row) + "\n" for _ in range(4)))
     with pytest.raises(ValueError, match="Condition bucket"):
         load_calibration(path, model.config, 0)
+
+
+
+def test_reference_code_prefix_calibration_without_speaker_slot():
+    from types import SimpleNamespace
+    from make_calibration import _to_json_rows
+
+    branch = SimpleNamespace(
+        input_ids=torch.tensor([[129, 129, 2]], dtype=torch.int32),
+        speaker_rows=lambda: None,
+        condition_rows=lambda: None,
+    )
+    token = torch.tensor([1, 2, 448], dtype=torch.int32)
+    result = _to_json_rows(branch, [token])
+    assert result["speaker_rows"] == {}
+    assert result["condition_rows"] == {}
+    assert result["ids"] == [[129, 129, 2], [1, 2, 448]]

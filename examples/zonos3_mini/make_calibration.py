@@ -18,8 +18,8 @@ def _to_json_rows(branch, rows):
     ids = branch.input_ids.to("cpu")
     if rows:
         ids = torch.cat((ids, torch.stack(rows).to("cpu", dtype=ids.dtype)), dim=0)
-    speakers = branch.speaker_rows()
-    conditions = branch.condition_rows()
+    speakers = branch.speaker_rows() or {}
+    conditions = branch.condition_rows() or {}
     return {
         "ids": ids.tolist(),
         "speaker_rows": {str(k): v.detach().float().cpu().tolist() for k, v in speakers.items()},
