@@ -110,8 +110,12 @@ def _run_expert(lm, name: str, x: torch.Tensor, fallback_weight: torch.Tensor):
     if key is not None:
         # Reference calls expert projections on 1-D token vectors.
         return _native_forward(lm, lm._gptqpro_modules[key], x.unsqueeze(0)).squeeze(0)
+    preserved_key = getattr(lm, "_gptqpro_preserved_index", {}).get(name)
+    if preserved_key is not None:
+        return _native_forward(lm, lm._gptqpro_preserved_modules[preserved_key],
+                               x.unsqueeze(0)).squeeze(0)
     if fallback_weight.is_meta:
-        raise RuntimeError(f"No native module for released original weight {name}")
+        raise RuntimeError(f"No native or preserved module for released original weight {name}")
     return F.linear(x, fallback_weight)
 
 
@@ -179,6 +183,8 @@ def enable_dispatch(lm, *, allow_cpu_offload: bool = False):
     lm._gptqpro_original_ffn = lm._feed_forward
     lm._gptqpro_modules = nn.ModuleDict()
     lm._gptqpro_index = {}
+    lm._gptqpro_preserved_modules = nn.ModuleDict()
+    lm._gptqpro_preserved_index = {}
     lm._gptqpro_capture = None
     lm._gptqpro_allow_cpu_offload = bool(allow_cpu_offload)
     lm._lin = MethodType(_patched_lin, lm)
@@ -189,17 +195,35 @@ def enable_dispatch(lm, *, allow_cpu_offload: bool = False):
 
 def register_module(lm, name: str, module: nn.Module) -> None:
     enable_dispatch(lm)
-    if name in lm._gptqpro_index:
+    if name in lm._gptqpro_index or name in lm._gptqpro_preserved_index:
         raise RuntimeError(f"Overlay entry already installed: {name}")
     key = f"q{len(lm._gptqpro_modules):05d}"
     lm._gptqpro_modules[key] = module
     lm._gptqpro_index[name] = key
 
 
+def register_preserved(lm, name: str) -> None:
+    """Retain just one low-coverage source expert at BF16, without its full 3D parent tensor."""
+    enable_dispatch(lm)
+    if ".feed_forward.experts." not in name:
+        raise ValueError(f"BF16 preservation only supports MoE experts: {name}")
+    if name in lm._gptqpro_index or name in lm._gptqpro_preserved_index:
+        raise RuntimeError(f"Overlay entry already installed: {name}")
+    source = weight_for(lm, name)
+    rows, cols = source.shape
+    saved = nn.Linear(cols, rows, bias=False, device=source.device,
+                      dtype=source.dtype).requires_grad_(False)
+    with torch.no_grad():
+        saved.weight.copy_(source)
+    key = f"p{len(lm._gptqpro_preserved_modules):05d}"
+    lm._gptqpro_preserved_modules[key] = saved
+    lm._gptqpro_preserved_index[name] = key
+
+
 def release_layer_weights(lm, layer: int):
-    """Free original source projections only after ALL allowed targets exist."""
+    """Free original source projections only after all targets are quantized OR preserved."""
     expected = set(candidate_names(lm, layer))
-    missing = expected - lm._gptqpro_index.keys()
+    missing = expected - lm._gptqpro_index.keys() - lm._gptqpro_preserved_index.keys()
     if missing:
         raise RuntimeError(f"Refuse incomplete source release for layer {layer}: {len(missing)} missing")
     names = candidate_names(lm, layer)
@@ -254,8 +278,20 @@ def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, r
     for part in info["layers"]:
         i = part["index"]
         known = target_shapes(lm, i)
-        if {v["name"] for v in part["modules"]} != set(known):
+        quant_names = [v["name"] for v in part["modules"]]
+        preserved = part.get("preserved", [])
+        preserved_names = [v["name"] for v in preserved]
+        if (len(set(quant_names)) != len(quant_names)
+                or len(set(preserved_names)) != len(preserved_names)
+                or set(quant_names).intersection(preserved_names)
+                or set(quant_names).union(preserved_names) != set(known)):
             raise ValueError(f"Missing, duplicated or unexpected layer {i} projections")
+        for item in preserved:
+            name = item["name"]
+            if ".feed_forward.experts." not in name:
+                raise ValueError(f"Only source MoE experts may remain BF16: {name}")
+            if (item["in_features"], item["out_features"]) != known[name]:
+                raise ValueError(f"BF16 expert source shape mismatch: {name}")
         expected_file = f"layer_{i:02d}.safetensors"
         if part["file"] != expected_file:
             raise ValueError(f"Invalid shard filename at layer {i}")
@@ -285,6 +321,8 @@ def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, r
                 register_module(lm, name, q)
             if used != keys:
                 raise ValueError(f"Unrecognized tensors in {part['file']}: {keys - used}")
+        for item in preserved:
+            register_preserved(lm, item["name"])
         if release:
             release_layer_weights(lm, i)
     return info

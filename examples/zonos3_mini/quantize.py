@@ -22,7 +22,7 @@ from safetensors.torch import save_file
 from overlay_runtime import (
     BITS, FORMAT, GROUP_SIZE, candidate_names, enable_dispatch,
     load_overlay, register_module, release_layer_weights,
-    source_identity, target_shapes, weight_for, sha256_file,
+    source_identity, target_shapes, weight_for, sha256_file, register_preserved,
 )
 
 
@@ -226,14 +226,27 @@ def main():
     for i in range(len(data["layers"]), total):
         names = candidate_names(lm, i)
         capture = calibrate_layer(lm, samples, i, args.max_rows)
+        preserved = []
         for name in names:
             minimum = args.min_rows if ".experts." in name else args.min_dense_rows
             if capture.counts[name] < minimum:
-                raise RuntimeError(f"Calibration coverage {name}: {capture.counts[name]} < {minimum}; "
-                                   "add more diverse genuine TTS samples; no partial expert layer is saved")
+                if ".feed_forward.experts." not in name:
+                    raise RuntimeError(f"Calibration coverage {name}: {capture.counts[name]} < {minimum}; "
+                                       "dense paths must have sufficient real activation rows")
+                width, height = target_shapes(lm, i)[name]
+                preserved.append({
+                    "name": name, "in_features": width, "out_features": height,
+                    "observed_rows": capture.counts[name], "required_rows": minimum,
+                })
+                register_preserved(lm, name)
+        preserved_names = {p["name"] for p in preserved}
+        print(f"  Layer {i}: preserving {len(preserved)} under-covered expert "
+              f"projections at BF16 (no uncalibrated INT4)", flush=True)
         payload, entries = {}, []
         start = time.monotonic()
         for j, name in enumerate(names):
+            if name in preserved_names:
+                continue
             x = capture.data(name, args.device)
             native, packed, entry = quantize_one(lm, name, x, args.device, args.max_fit_nmse)
             register_module(lm, name, native)
@@ -247,7 +260,7 @@ def main():
         save_file(payload, str(tmp))
         os.replace(tmp, args.out / fname)
         data["layers"].append({
-            "index": i, "file": fname, "modules": entries,
+            "index": i, "file": fname, "modules": entries, "preserved": preserved,
             "seconds": round(time.monotonic() - start, 2),
             "bytes": (args.out / fname).stat().st_size,
             "sha256": sha256_file(args.out / fname),

@@ -11,7 +11,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "zonos3_mini"))
 from overlay_runtime import (  # noqa: E402
     candidate_names, enable_dispatch, register_module, release_layer_weights,
-    target_shapes, weight_for,
+    target_shapes, weight_for, register_preserved,
 )
 
 zonos = pytest.importorskip("zonos3.reference.lm")
@@ -178,3 +178,34 @@ def test_reference_code_prefix_calibration_without_speaker_slot():
     assert result["speaker_rows"] == {}
     assert result["condition_rows"] == {}
     assert result["ids"] == [[129, 129, 2], [1, 2, 448]]
+
+
+
+def test_sparse_expert_preservation_after_original_tensor_release(model):
+    import torch.nn.functional as F
+    from overlay_runtime import _run_expert
+
+    expert = "layers.1.feed_forward.experts.gate_up_proj.0"
+    input_vec = torch.randn(64, dtype=torch.float32)
+    with torch.inference_mode():
+        expected_expert = F.linear(input_vec, weight_for(model, expert))
+        x = torch.randn(3, model.config.dim)
+        teacher = model._feed_forward(x, 1)
+        enable_dispatch(model)
+        for name in candidate_names(model, 1):
+            if name == expert:
+                register_preserved(model, name)
+            else:
+                source = weight_for(model, name)
+                standin = nn.Linear(source.shape[1], source.shape[0], bias=False)
+                standin.weight.copy_(source)
+                register_module(model, name, standin)
+        release_layer_weights(model, 1)
+        assert model.layers[1].feed_forward.experts.gate_up_proj.is_meta
+        preserved = _run_expert(
+            model, expert, input_vec,
+            model.layers[1].feed_forward.experts.gate_up_proj[0],
+        )
+        torch.testing.assert_close(expected_expert, preserved, rtol=0, atol=0)
+        actual = model._feed_forward(x, 1)
+        torch.testing.assert_close(teacher, actual, atol=1e-6, rtol=1e-6)

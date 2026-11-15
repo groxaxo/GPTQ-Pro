@@ -115,3 +115,22 @@ This explicit CPU->CUDA->CPU dispatch is a *validation fallback only*.
 It is slower than direct CUDA inference and not a production serving backend.
 Partial-overlay numeric regression is not a substitute for complete-model
 held-out evaluation or blind voice-quality testing.
+
+
+## Sparse expert coverage policy (quality-first)
+
+The MoE router can leave some experts with few or zero activations even after
+hundreds of genuinely generated TTS requests. This workflow **never fabricates**
+Hessian samples or quantizes an unobserved expert. For a layer with sufficient
+dense-path calibration, under-covered *expert* matrices are retained exactly as
+BF16 in compact per-expert Linear modules. The original 3D source Parameters
+are then released to meta, so memory is not duplicated. Covered expert matrices
+are quantized normally. The overlay manifest contains **both** the native INT4
+entries and the explicit preserved BF16 expert names/shapes/coverage, and the
+loader refuses any missing or duplicated projection. A real matching BF16 source
+checkpoint is still mandatory, including for these preserved experts.
+
+Dense-path insufficiency, bad native parity and poor quantization fit remain
+hard errors. A complete 11-layer *mixed precision overlay* does not mean all
+1,317 eligible projections became INT4. Report the actual quantized/preserved
+counts and measured memory/performance, and complete speech-quality A/B tests.
