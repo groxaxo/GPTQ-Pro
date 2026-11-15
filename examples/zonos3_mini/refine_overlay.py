@@ -19,7 +19,8 @@ from safetensors.torch import save_file
 from overlay_runtime import _read_manifest, sha256_file
 
 
-def refine_overlay(source: Path, out: Path, max_fit_nmse: float) -> dict:
+def refine_overlay(source: Path, out: Path, max_fit_nmse: float, *,
+                   preserve_nonexpert: bool = False) -> dict:
     source, out = Path(source).resolve(), Path(out).resolve()
     if not 0.0 < max_fit_nmse < 0.05:
         raise ValueError("Fit-NMSE preservation gate must lie strictly within (0, 0.05)")
@@ -31,6 +32,7 @@ def refine_overlay(source: Path, out: Path, max_fit_nmse: float) -> dict:
     adjusted["refinement"] = {
         "policy": "preserve-in-BF16-when-quantized-fit-NMSE-exceeds-threshold",
         "fit_nmse_threshold": max_fit_nmse,
+        "preserve_nonexpert": bool(preserve_nonexpert),
         "source_manifest_sha256": sha256_file(source),
     }
     adjusted["full_model_certified"] = False
@@ -46,14 +48,17 @@ def refine_overlay(source: Path, out: Path, max_fit_nmse: float) -> dict:
             value = float(entry["fit_nmse"])
             if not (0 <= value < float("inf")):
                 raise RuntimeError(f"Non-finite fit NMSE: {entry['name']}")
-            if value <= max_fit_nmse:
+            is_critical_dense = preserve_nonexpert and ".experts." not in entry["name"]
+            if value <= max_fit_nmse and not is_critical_dense:
                 keep.append(entry)
             else:
                 promoted.append({
                     "name": entry["name"], "in_features": entry["in_features"],
                     "out_features": entry["out_features"],
                     "observed_rows": entry["calibration_rows"],
-                    "reason": "projection_fit_nmse_exceeded_strict_quality_cutoff",
+                    "reason": ("architectural_fidelity_preserve_nonexpert"
+                               if is_critical_dense else
+                               "projection_fit_nmse_exceeded_strict_quality_cutoff"),
                     "fit_nmse": value,
                 })
         allowed = {e["name"] for e in keep}
@@ -95,8 +100,11 @@ def main():
     p.add_argument("--source-manifest", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--preserve-above-fit-nmse", type=float, default=0.003)
+    p.add_argument("--protect-nonexpert-linears", action="store_true",
+                   help="Preserve low-cost GDN/attention/dense/latent linears BF16; quantize experts only")
     a = p.parse_args()
-    refine_overlay(a.source_manifest, a.out, a.preserve_above_fit_nmse)
+    refine_overlay(a.source_manifest, a.out, a.preserve_above_fit_nmse,
+                   preserve_nonexpert=a.protect_nonexpert_linears)
 
 
 if __name__ == "__main__":

@@ -267,3 +267,37 @@ def test_refinement_reclassifies_outliers_and_rehashes_shards(tmp_path):
         assert list(f.keys()) == ["layers.0.feed_forward.w_in.qweight"]
     with pytest.raises(FileExistsError):
         refine_overlay(source, tmp_path / "refined", 0.003)
+
+
+
+def test_refinement_expert_only_policy(tmp_path):
+    import json
+    from safetensors.torch import save_file
+    from overlay_runtime import FORMAT, sha256_file
+    from refine_overlay import refine_overlay
+
+    source = tmp_path / "source"
+    source.mkdir()
+    shard = source / "layer_01.safetensors"
+    save_file({
+        "layers.1.attention.wo.qweight": torch.ones(4, 4, dtype=torch.int32),
+        "layers.1.feed_forward.experts.gate_up_proj.0.qweight":
+            torch.ones(4, 4, dtype=torch.int32),
+    },str(shard))
+    old = {"format": FORMAT,"bits":4,"group_size":64,"sym":True,"desc_act":False,
+           "layers":[{"index":0,"file":"layer_01.safetensors",
+                      "sha256":sha256_file(shard),
+                      "modules":[{"name":"layers.1.attention.wo","in_features":64,
+                                  "out_features":64,"fit_nmse":0.0001,"calibration_rows":128},
+                                 {"name":"layers.1.feed_forward.experts.gate_up_proj.0",
+                                  "in_features":64,"out_features":64,
+                                  "fit_nmse":0.0001,"calibration_rows":128}],
+                      "preserved":[]}]}
+    p=source/"manifest.json"
+    p.write_text(json.dumps(old))
+    out=refine_overlay(p,tmp_path/"out",0.003,preserve_nonexpert=True)
+    l=out["layers"][0]
+    assert [m["name"] for m in l["modules"]] == [
+        "layers.1.feed_forward.experts.gate_up_proj.0"
+    ]
+    assert l["preserved"][0]["reason"] == "architectural_fidelity_preserve_nonexpert"

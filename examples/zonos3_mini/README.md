@@ -155,3 +155,23 @@ The utility never overwrites the original quantization. It recomputes safetensor
 hashes, updates the manifest, and lists every newly preserved BF16 projection
 by name, shape and original fit NMSE. Assess the derived checkpoint on an
 independent held-out TTS corpus: **never treat small fit-NMSE as audio MOS**.
+
+
+### Experts-first quality policy
+
+For speech-oriented quality, the small attention/GDN outputs, first dense FFN,
+and MoE latent projections can all remain BF16 with relatively little VRAM
+cost. Concentrate GPTQ-Pro compression on large MoE expert matrices:
+
+~~~bash
+python examples/zonos3_mini/refine_overlay.py \
+  --source-manifest ./private/zonos3-gptqpro-int4-g64/manifest.json \
+  --out ./private/zonos3-gptqpro-experts-only   --preserve-above-fit-nmse 0.003 --protect-nonexpert-linears
+~~~
+
+This keeps every non-expert source linear at its exact BF16 weights, including
+attention and recurrence output projections; above-threshold expert projections
+also remain BF16. The original full model is still needed to reload. This
+policy is expected to be a better quality/memory trade-off than aggressively
+quantizing structurally sensitive, low-parameter projections. **Validate the
+complete TTS model on separate long-sequence holdouts** before release.
