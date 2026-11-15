@@ -257,6 +257,16 @@ def release_layer_weights(lm, layer: int):
         ))
 
 
+def _manifest_location(path) -> Path:
+    """Preserve the containing snapshot dir even if HF caches manifest as symlink.
+
+    Path.resolve() follows a Hugging Face manifest symlink into blobs/, losing
+    the sibling layer_XX.safetensors files under snapshots/<sha>/overlay/.
+    Normalize the absolute *pathname* without dereferencing the symlink.
+    """
+    return Path(path).expanduser().absolute()
+
+
 def _read_manifest(path):
     info = json.loads(Path(path).read_text(encoding="utf-8"))
     if info.get("format") != FORMAT or (
@@ -278,7 +288,7 @@ def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, r
     """
     from gptqmodel.nn_modules.qlinear.gptq_pro import GptqProQuantLinear
 
-    manifest_path = Path(manifest_path).resolve()
+    manifest_path = _manifest_location(manifest_path)
     info = _read_manifest(manifest_path)
     if info["source"] != source_identity(lm):
         raise RuntimeError("Source model/config checksum mismatch")

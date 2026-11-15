@@ -20,7 +20,7 @@ def resolve_overlay(*, manifest: Path | None, repo_id: str | None) -> Path:
     if (manifest is None) == (repo_id is None):
         raise ValueError("Provide exactly one of --manifest or --overlay-repo")
     if manifest is not None:
-        p = Path(manifest).expanduser().resolve()
+        p = Path(manifest).expanduser().absolute()
         if not p.is_file():
             raise FileNotFoundError(p)
         return p

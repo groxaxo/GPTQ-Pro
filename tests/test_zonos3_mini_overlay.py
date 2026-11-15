@@ -328,3 +328,24 @@ def test_refinement_all_bf16_layer_has_valid_empty_safetensors(tmp_path):
     with safe_open(str(new_shard),framework="pt",device="cpu") as f:
         assert list(f.keys()) == []
     assert result["layers"][0]["sha256"]==sha256_file(new_shard)
+
+
+
+def test_hf_manifest_symlink_keeps_sibling_safetensors_location(tmp_path):
+    from overlay_runtime import _manifest_location
+
+    snapshot = tmp_path / "repo" / "snapshots" / "sha" / "overlay"
+    blobs = tmp_path / "repo" / "blobs"
+    snapshot.mkdir(parents=True)
+    blobs.mkdir(parents=True)
+    original_manifest = blobs / "manifest-content"
+    original_manifest.write_text('{"format":"test"}')
+    linked_manifest = snapshot / "manifest.json"
+    linked_manifest.symlink_to(original_manifest)
+    shard = snapshot / "layer_00.safetensors"
+    shard.write_bytes(b"local-packed-weights")
+    output = _manifest_location(linked_manifest)
+    assert output == linked_manifest
+    assert output.is_file()
+    assert output.parent / shard.name == shard
+    assert (output.parent / shard.name).read_bytes() == b"local-packed-weights"
