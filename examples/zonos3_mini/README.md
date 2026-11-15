@@ -84,3 +84,19 @@ Held-out evaluation reports teacher/INT4 logit NMSE, KL and argmax agreement. **
 The output is an experimental, pinned-source BF16+INT4 overlay, not a standalone downloadable 4-bit model.
 
 Local smoke: the original 11-layer BF16 model successfully built and generated a 21-row token sequence on CPU from a valid en_us embedding-mode request. Four independent synthetic requests yielded 68 replayable token rows; the layer-1 capture intercepted 29/131 projections with that one short sample. This checks the replay path, **not** expert coverage for quantization or speech quality.
+
+## Low-VRAM native kernel pilot (only when the GPU is busy)
+
+The original reference model can remain on the **CPU** while an individual projection
+is quantized and parity-tested on a CUDA GPU. This avoids loading the complete
+1.7 GB BF16 checkpoint on an already occupied GPU. Use a **new** destination:
+
+~~~bash
+python examples/zonos3_mini/quantize.py   --base "$BASE" --calibration ./private/tts_tokens_fit.jsonl   --out ./private/zonos3-gptqpro-cpu-offload-pilot   --device cuda:0 --model-device cpu --max-layers 1   --max-rows 64 --min-dense-rows 8 --min-rows 8
+~~~
+
+**Only layer 0 is supported in offload mode.** Further layers depend on the
+previous quantized layer for activation capture, and mixing CPU input with native
+CUDA modules would not be a legitimate sequential quantization pass.
+Keep the quality gates; the small pilot above only tests the packing
+plumbing and must not be published as an optimized speech model.

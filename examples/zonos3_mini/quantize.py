@@ -173,7 +173,8 @@ def main():
     p.add_argument("--base", type=Path, required=True, help="ZONOS3-Mini LM directory (model.pth + params.json)")
     p.add_argument("--calibration", type=Path, required=True, help="Actual TTS token JSONL from make_calibration.py")
     p.add_argument("--out", type=Path, required=True, help="Directory for packed overlay and manifest")
-    p.add_argument("--device", default="cuda:0")
+    p.add_argument("--device", default="cuda:0", help="CUDA device for per-projection solver and native INT4 kernel")
+    p.add_argument("--model-device", default=None, help="Optional CPU model offload for layer-0-only low-VRAM pilot")
     p.add_argument("--max-layers", type=int, default=0, help="0 = all layers; smaller = explicitly incomplete pilot")
     p.add_argument("--max-rows", type=int, default=256, help="Maximum activation rows per projection")
     p.add_argument("--min-rows", type=int, default=64, help="Minimum per-expert rows, fail closed")
@@ -183,17 +184,22 @@ def main():
     args = p.parse_args()
     if not args.device.startswith("cuda"):
         p.error("Native GPTQ-Pro overlay requires a CUDA device")
+    model_device = args.model_device or args.device
+    if model_device != args.device and (model_device != "cpu" or args.max_layers != 1):
+        p.error("--model-device cpu is available for a layer-0-only pilot (--max-layers 1)")
     if args.max_rows < max(args.min_rows, args.min_dense_rows) or args.min_rows < 1:
         p.error("Insufficient capture row budget")
     from zonos3.reference.lm import Zonos3LM
     args.out.mkdir(parents=True, exist_ok=True)
     manifest_path = args.out / "manifest.json"
     torch.manual_seed(20261115)
-    lm = Zonos3LM.load(args.base, device=args.device, dtype=torch.bfloat16).eval()
+    lm = Zonos3LM.load(args.base, device=model_device, dtype=torch.bfloat16).eval()
     source = source_identity(lm)
     calibration_sha256 = sha256_file(args.calibration)
     samples = load_calibration(args.calibration, lm.config, args.limit_calibration)
     if manifest_path.exists():
+        if model_device != args.device:
+            raise RuntimeError("CPU-offload pilot requires a fresh overlay destination; cannot resume")
         data = json.loads(manifest_path.read_text())
         if data.get("format") != FORMAT or data.get("source") != source or (
             data.get("bits"), data.get("group_size"), data.get("sym"), data.get("desc_act")
