@@ -87,6 +87,19 @@ def target_shapes(lm, layer: int) -> dict[str, tuple[int, int]]:
     return out
 
 
+def _native_forward(lm, module: nn.Module, x: torch.Tensor):
+    """Opt-in CPU activation offload for an otherwise native CUDA INT4 module."""
+    qweight = getattr(module, "qweight", None)
+    target_device = qweight.device if qweight is not None else next(module.parameters()).device
+    if x.device == target_device:
+        return module(x)
+    if not getattr(lm, "_gptqpro_allow_cpu_offload", False):
+        raise RuntimeError("Quantized module/input device mismatch; explicitly enable CPU offload")
+    if x.device.type != "cpu" or target_device.type != "cuda":
+        raise RuntimeError("Only CPU input -> CUDA packed weight -> CPU output offload is supported")
+    return module(x.to(target_device, non_blocking=False)).to(device=x.device, dtype=x.dtype)
+
+
 def _run_expert(lm, name: str, x: torch.Tensor, fallback_weight: torch.Tensor):
     """Use native packed kernel, or FP original for incomplete overlays."""
     callback = getattr(lm, "_gptqpro_capture", None)
@@ -96,7 +109,7 @@ def _run_expert(lm, name: str, x: torch.Tensor, fallback_weight: torch.Tensor):
     key = index.get(name)
     if key is not None:
         # Reference calls expert projections on 1-D token vectors.
-        return lm._gptqpro_modules[key](x.unsqueeze(0)).squeeze(0)
+        return _native_forward(lm, lm._gptqpro_modules[key], x.unsqueeze(0)).squeeze(0)
     if fallback_weight.is_meta:
         raise RuntimeError(f"No native module for released original weight {name}")
     return F.linear(x, fallback_weight)
@@ -111,7 +124,7 @@ def _patched_lin(self, name, x, weight, bias=None):
         return self._gptqpro_original_lin(name, x, weight, bias)
     if bias is not None:
         raise ValueError(f"Unexpected biased quantized projection: {name}")
-    out = self._gptqpro_modules[key](x)
+    out = _native_forward(self, self._gptqpro_modules[key], x)
     return out if self._accents is None else self._accents.linear(name, x, out)
 
 
@@ -152,19 +165,22 @@ def _patched_ffn(self, x, layer):
     return self._lin(prefix + "latent_up", output, f.latent_up.weight)
 
 
-def enable_dispatch(lm):
+def enable_dispatch(lm, *, allow_cpu_offload: bool = False):
     """Idempotent interception; no global monkeypatch and no upstream edits."""
     upstream = (inspect.getsource(type(lm)._lin) +
                 inspect.getsource(type(lm)._feed_forward)).encode("utf-8")
     if hashlib.sha256(upstream).hexdigest() != REFERENCE_DISPATCH_SHA256:
         raise RuntimeError("ZONOS3-Mini reference routing code changed; review the adapter before use")
     if getattr(lm, "_gptqpro_dispatched", False):
+        if allow_cpu_offload:
+            lm._gptqpro_allow_cpu_offload = True
         return lm
     lm._gptqpro_original_lin = lm._lin
     lm._gptqpro_original_ffn = lm._feed_forward
     lm._gptqpro_modules = nn.ModuleDict()
     lm._gptqpro_index = {}
     lm._gptqpro_capture = None
+    lm._gptqpro_allow_cpu_offload = bool(allow_cpu_offload)
     lm._lin = MethodType(_patched_lin, lm)
     lm._feed_forward = MethodType(_patched_ffn, lm)
     lm._gptqpro_dispatched = True
@@ -220,7 +236,7 @@ def _read_manifest(path):
 
 
 @torch.inference_mode()
-def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, release=True):
+def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, release=True, allow_cpu_offload=False):
     """Load an overlay into the pinned original ZONOS3-Mini BF16 model.
 
     For complete overlays, release source BF16 weights after verifying all
@@ -234,7 +250,7 @@ def load_overlay(lm, manifest_path, *, device="cuda:0", require_complete=True, r
         raise RuntimeError("Source model/config checksum mismatch")
     if require_complete and len(info["layers"]) != lm.config.n_layers:
         raise RuntimeError("Incomplete ZONOS3-Mini overlay (not a full-model checkpoint)")
-    enable_dispatch(lm)
+    enable_dispatch(lm, allow_cpu_offload=allow_cpu_offload)
     for part in info["layers"]:
         i = part["index"]
         known = target_shapes(lm, i)

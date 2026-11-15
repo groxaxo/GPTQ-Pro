@@ -100,3 +100,18 @@ previous quantized layer for activation capture, and mixing CPU input with nativ
 CUDA modules would not be a legitimate sequential quantization pass.
 Keep the quality gates; the small pilot above only tests the packing
 plumbing and must not be published as an optimized speech model.
+
+
+### Numeric regression for a low-VRAM partial overlay
+
+With a **separate** set of held-out tokens, compare the real BF16 model to the
+packed layer-0 result without loading the entire model on the occupied GPU:
+
+~~~bash
+python examples/zonos3_mini/evaluate.py   --base "$BASE"   --overlay ./private/zonos3-gptqpro-cpu-offload-pilot/manifest.json   --holdout ./private/tts_tokens_holdout.jsonl   --device cuda:0 --model-device cpu --allow-cpu-offload --allow-incomplete
+~~~
+
+This explicit CPU->CUDA->CPU dispatch is a *validation fallback only*.
+It is slower than direct CUDA inference and not a production serving backend.
+Partial-overlay numeric regression is not a substitute for complete-model
+held-out evaluation or blind voice-quality testing.
