@@ -26,15 +26,16 @@ ends are `9,18,24`. Change
 visible GPUs. GPU 0 also holds embeddings, output head and vision tower.
 
 ```bash
-hf download groxaxo/Inkling-2-Mini-GPTQ-Pro-INT4 --local-dir mini-release
-python examples/inkling2_mini/infer.py mini-release "What is the capital of France?"
-python examples/inkling2_mini/infer.py mini-release "Describe the image." --image image.jpg
+revision=b85c3cfa615fc413cc9af3379f491b963f3b586a
+hf download thinkingmachines/Inkling-2-Mini --revision "$revision" --local-dir mini-base
+hf download groxaxo/Inkling-2-Mini-GPTQ-Pro-INT4 --local-dir mini-overlay
+python examples/inkling2_mini/infer.py mini-overlay "What is the capital of France?" --base mini-base
+python examples/inkling2_mini/infer.py mini-overlay "Describe the image." --base mini-base --image image.jpg
 ```
 
-For an overlay-only download, fetch the original revision and provide its local
-folder with `--base inkling-mini-source`. The compact checkpoint stores a
-Transformers base under `base/` with the packed projections at the release root.
-Use the supplied loader to apply those projections before generation.
+A compact export contains its base under `base/` with the packed projections at
+the release root. Pass that release directory to the same loader and omit
+`--base` to use the bundled checkpoint.
 
 ## Reproduce
 
