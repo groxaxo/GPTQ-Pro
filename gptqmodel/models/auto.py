@@ -583,19 +583,15 @@ class GPTQModel:
     def _is_remote_inkling2_mini(repo_id, kwargs):
         if not isinstance(repo_id, str) or isdir(repo_id) or os.path.isabs(repo_id):
             return False
-        import json
         from transformers.utils.hub import cached_file
-        from .inkling2_mini import MANIFEST, SOURCE
+        from .inkling2_mini import MANIFEST, is_inkling_manifest
 
         hub_kwargs = {key: kwargs[key] for key in ("revision", "token", "cache_dir", "local_files_only")
                       if key in kwargs}
         path = cached_file(repo_id, MANIFEST, _raise_exceptions_for_missing_entries=False,
                            _raise_exceptions_for_gated_repo=False,
                            _raise_exceptions_for_connection_errors=False, **hub_kwargs)
-        if path is None:
-            return False
-        with open(path, encoding="utf-8") as handle:
-            return json.load(handle).get("source") == SOURCE
+        return is_inkling_manifest(path)
 
     @classmethod
     def _load_inkling2_mini(cls, model_id_or_path, device_map, device, backend, adapter, kwargs):

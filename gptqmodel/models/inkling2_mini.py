@@ -112,13 +112,18 @@ def read_manifest(overlay):
     return manifest
 
 
+def is_inkling_manifest(file):
+    if file is None or not Path(file).is_file():
+        return False
+    try:
+        manifest = json.loads(Path(file).read_text())
+    except json.JSONDecodeError:
+        return False
+    return isinstance(manifest, dict) and manifest.get("source") == SOURCE
+
+
 def is_inkling_checkpoint(path):
-    if path is None:
-        return False
-    manifest = Path(path) / MANIFEST
-    if not manifest.is_file():
-        return False
-    return json.loads(manifest.read_text()).get("source") == SOURCE
+    return path is not None and is_inkling_manifest(Path(path) / MANIFEST)
 
 
 def expert_layers(manifest):
@@ -283,12 +288,12 @@ def from_quantized(release, *, base=None, layer_ends=(9, 18, 24), experts="eager
     """Load a local or Hub Inkling Mini GPTQ-Pro checkpoint and its processor."""
     if not release:
         raise ValueError("An Inkling Mini release path or Hub repository is required")
-    path = Path(release)
+    path = Path(release).expanduser()
     if not path.is_dir():
         if path.is_absolute():
             raise FileNotFoundError(path)
         path = Path(snapshot_download(
-            repo_id=release, revision=revision, token=token, cache_dir=cache_dir,
+            repo_id=str(release), revision=revision, token=token, cache_dir=cache_dir,
             local_files_only=local_files_only,
         ))
     if not is_inkling_checkpoint(path):
