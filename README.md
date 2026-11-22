@@ -51,6 +51,7 @@ DeepSeek, GLM, MiniMax, Phi, GPT-OSS and more**, plus a separate
 
 | Model / family | Available workflow | Status |
 | --- | --- | --- |
+| **Inkling 2 Mini** | [Native checkpoint loader and expert recipe](examples/inkling2_mini/README.md) | Three-pass multimodal MoE with native GPTQ-Pro dense and routed-expert checkpoints. Local or Hub loading through `GPTQModel.from_quantized()`. |
 | **ZONOS3-Mini** | [Selective INT4 overlay workflow](examples/zonos3_mini/README.md) | **11/11-layer GPTQ-Pro INT4/BF16 overlay** with a [tested SGLang-Omni INT4 backend](docs/verification/zonos3-mini-sglang-omni-20261115.md) (40.8x real-time on RTX 3090), [HF checkpoint](https://huggingface.co/groxaxo/ZONOS3-Mini-GPTQ-Pro-INT4) and matching audio A/B; experimental: original BF16 source required, SGLang-core and native GPTQModel registry not supported. |
 | **LFM3-Audio-2B** | [Speech inference examples](examples/lfm3_audio/README.md) · [INT4 release and listening samples](https://huggingface.co/groxaxo/LFM3-Audio-2B-GPTQ-Pro-INT4) | Published selective INT4 overlay, tested on RTX 3090. Requires the original BF16 model and custom loader; separate from the general model registry. |
 | **Qwen3.5-9B** | [Quality recipe and experiment](docs/VALIDATED_QUALITY_DEFAULT.md) | Recorded controlled decoder-quality comparison; results apply to that experiment. |

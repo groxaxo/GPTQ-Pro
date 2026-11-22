@@ -1,4 +1,4 @@
-"""Assemble a self-contained Inkling Mini distribution with original expert tensors."""
+"""Assemble a compact upstream base while copying the protected tensors byte for byte."""
 
 import argparse
 import json
@@ -22,10 +22,14 @@ def source_key(name):
 
 
 def rewrite_shard(source, target, removed):
+    if isinstance(removed, set):
+        removed = dict.fromkeys(removed, "BF16")
     with source.open("rb") as src:
         size, = struct.unpack("<Q", src.read(8))
         old_header = json.loads(src.read(size))
-        assert removed <= old_header.keys(), removed - old_header.keys()
+        missing = removed.keys() - old_header.keys()
+        if missing:
+            raise ValueError(f"Source has no tensors for {sorted(missing)}")
         header = {"__metadata__": old_header.get("__metadata__", {})}
         spans = []
         output_size = 0
@@ -37,8 +41,8 @@ def rewrite_shard(source, target, removed):
             start, end = tensor["data_offsets"]
             length = end - start
             if name in removed:
-                if tensor["dtype"] != "BF16":
-                    raise ValueError(f"Expected a BF16 source projection at {name}")
+                if tensor["dtype"] != removed[name]:
+                    raise ValueError(f"Expected a {removed[name]} source tensor at {name}")
                 dropped_size += length
                 continue
             header[name] = {**tensor, "data_offsets": [output_size, output_size + length]}
@@ -62,6 +66,28 @@ def rewrite_shard(source, target, removed):
         return dropped_size
 
 
+def build_base(source, base, removed):
+    base.mkdir(parents=True)
+    for name in (
+        "config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+        "generation_config.json", "processor_config.json", "chat_template.jinja",
+        "hf_quant_config.json", "mtp.safetensors",
+    ):
+        shutil.copy2(source / name, base / name)
+    shutil.copytree(source / "tiktoken", base / "tiktoken")
+    index = json.loads((source / INDEX).read_text())
+    for name in removed:
+        if index["weight_map"].pop(name) != SHARD:
+            raise ValueError(f"Unexpected safetensors shard for {name}")
+    dropped_bytes = rewrite_shard(source / SHARD, base / SHARD, removed)
+    index["metadata"]["total_size"] -= dropped_bytes
+    (base / INDEX).write_text(json.dumps(index, indent=2) + "\n")
+    (base / MARKER).write_text(json.dumps(
+        {"source": SOURCE, "revision": REVISION, "omitted_weights": sorted(removed)}, indent=2,
+    ) + "\n")
+    return dropped_bytes
+
+
 def export(source, overlay, output):
     manifest = json.loads((overlay / "gptq_pro.json").read_text())
     validation = json.loads((overlay / "validation.json").read_text())
@@ -78,26 +104,9 @@ def export(source, overlay, output):
     removed = {source_key(module) for module in manifest["modules"]}
     with tempfile.TemporaryDirectory(dir=output.parent, prefix="inkling2-mini-export-") as staging:
         stage = Path(staging) / "release"
-        base = stage / "base"
-        base.mkdir(parents=True)
-        for name in (
-            "config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-            "generation_config.json", "processor_config.json", "chat_template.jinja",
-            "hf_quant_config.json", "mtp.safetensors",
-        ):
-            shutil.copy2(source / name, base / name)
-        shutil.copytree(source / "tiktoken", base / "tiktoken")
-        index = json.loads((source / INDEX).read_text())
-        for name in removed:
-            if index["weight_map"].pop(name) != SHARD:
-                raise ValueError(f"Unexpected safetensors shard for {name}")
-        dropped_bytes = rewrite_shard(source / SHARD, base / SHARD, removed)
+        dropped_bytes = build_base(source, stage / "base", removed)
         if dropped_bytes != manifest["base_bytes_replaced"]:
             raise ValueError("Source and replacement BF16 byte counts differ")
-        index["metadata"]["total_size"] -= dropped_bytes
-        (base / INDEX).write_text(json.dumps(index, indent=2) + "\n")
-        (base / MARKER).write_text(json.dumps({"source": SOURCE, "revision": REVISION,
-                                             "omitted_weights": sorted(removed)}, indent=2) + "\n")
         for name in ("gptq_pro.json", "gptq_pro.safetensors", "validation.json"):
             shutil.copy2(overlay / name, stage / name)
         stage.rename(output)

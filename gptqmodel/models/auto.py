@@ -434,6 +434,13 @@ class GPTQModel:
     ):
         if isinstance(model_id_or_path, str):
             model_id_or_path = model_id_or_path.strip()
+        if cls._is_local_inkling2_mini(model_id_or_path):
+            if quantize_config is not None:
+                raise ValueError("Inkling 2 Mini GPTQ-Pro checkpoints are already quantized")
+            return cls.from_quantized(
+                model_id_or_path, device_map=device_map, device=device, backend=backend,
+                trust_remote_code=trust_remote_code, **kwargs,
+            )
         requested_trust_remote_code = trust_remote_code
         trust_remote_code = resolve_trust_remote_code(model_id_or_path, trust_remote_code=trust_remote_code)
 
@@ -451,11 +458,18 @@ class GPTQModel:
 
         model_cfg = None
         if not (treat_as_local_path and not isdir(model_id_or_path)):
-            model_cfg = AutoConfig.from_pretrained(
-                model_id_or_path,
-                trust_remote_code=trust_remote_code,
-                **_get_config_load_kwargs(kwargs),
-            )
+            try:
+                model_cfg = AutoConfig.from_pretrained(
+                    model_id_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **_get_config_load_kwargs(kwargs),
+                )
+            except (OSError, ValueError):
+                if not cls._is_remote_inkling2_mini(model_id_or_path, kwargs):
+                    raise
+                if quantize_config is not None:
+                    raise ValueError("Inkling 2 Mini GPTQ-Pro checkpoints are already quantized")
+                return cls._load_inkling2_mini(model_id_or_path, device_map, device, backend, None, kwargs)
 
         if model_cfg is not None and _is_supported_quantization_config(model_cfg):
             # only if the model is quantized or compatible with gptqmodel should we set is_quantized to true
@@ -557,6 +571,47 @@ class GPTQModel:
             **model_init_kwargs,
         )
 
+    @staticmethod
+    def _is_local_inkling2_mini(path):
+        if not isinstance(path, (str, os.PathLike)) or not os.path.isfile(join(path, "gptq_pro.json")):
+            return False
+        from .inkling2_mini import is_inkling_checkpoint
+
+        return is_inkling_checkpoint(path)
+
+    @staticmethod
+    def _is_remote_inkling2_mini(repo_id, kwargs):
+        if not isinstance(repo_id, str) or isdir(repo_id) or os.path.isabs(repo_id):
+            return False
+        import json
+        from transformers.utils.hub import cached_file
+        from .inkling2_mini import MANIFEST, SOURCE
+
+        hub_kwargs = {key: kwargs[key] for key in ("revision", "token", "cache_dir", "local_files_only")
+                      if key in kwargs}
+        path = cached_file(repo_id, MANIFEST, _raise_exceptions_for_missing_entries=False,
+                           _raise_exceptions_for_gated_repo=False,
+                           _raise_exceptions_for_connection_errors=False, **hub_kwargs)
+        if path is None:
+            return False
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle).get("source") == SOURCE
+
+    @classmethod
+    def _load_inkling2_mini(cls, model_id_or_path, device_map, device, backend, adapter, kwargs):
+        if device_map is not None or device is not None:
+            raise ValueError("Use layer_ends to place the Inkling 2 Mini decoder layers")
+        if adapter is not None or normalize_backend(backend) not in (BACKEND.AUTO, BACKEND.GPTQ_PRO):
+            raise ValueError("Inkling 2 Mini hybrid checkpoints require the native GPTQ-Pro backend")
+        return cls.from_inkling2_mini(model_id_or_path, **kwargs)
+
+    @classmethod
+    def from_inkling2_mini(cls, model_id_or_path, **kwargs):
+        """Load a native Inkling 2 Mini overlay or compact checkpoint from disk or the Hub."""
+        from .inkling2_mini import from_quantized
+
+        return from_quantized(model_id_or_path, **kwargs)
+
     @classmethod
     def from_quantized(
             cls,
@@ -568,6 +623,8 @@ class GPTQModel:
             trust_remote_code: bool = False,
             **kwargs,
     ) -> BaseQModel:
+        if cls._is_local_inkling2_mini(model_id_or_path):
+            return cls._load_inkling2_mini(model_id_or_path, device_map, device, backend, adapter, kwargs)
         normalize_torch_dtype_kwarg(
             kwargs,
             api_name="GPTQModel.from_quantized",
@@ -579,11 +636,16 @@ class GPTQModel:
         adapter = normalize_adapter(adapter)
 
         print(f"from_quantized: adapter: {adapter}")
-        model_definition = check_and_get_model_definition(
-            model_id_or_path,
-            trust_remote_code,
-            **_get_config_load_kwargs(kwargs),
-        )
+        try:
+            model_definition = check_and_get_model_definition(
+                model_id_or_path,
+                trust_remote_code,
+                **_get_config_load_kwargs(kwargs),
+            )
+        except (OSError, ValueError):
+            if not cls._is_remote_inkling2_mini(model_id_or_path, kwargs):
+                raise
+            return cls._load_inkling2_mini(model_id_or_path, device_map, device, backend, adapter, kwargs)
 
         backend = normalize_backend(backend)
 

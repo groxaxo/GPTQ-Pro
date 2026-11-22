@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from runtime import load
+from gptqmodel import GPTQModel
 
 
 def layer_ends(value):
@@ -26,8 +26,10 @@ if __name__ == "__main__":
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--experts", choices=("eager", "grouped_mm"), default="eager")
     args = parser.parse_args()
-    base = args.base or args.release / "base"
-    model, processor = load(base, args.release, layer_ends=args.layer_ends, experts=args.experts)
+    loaded = GPTQModel.from_inkling2_mini(
+        args.release, base=args.base, layer_ends=args.layer_ends, experts=args.experts,
+    )
+    model, processor = loaded.model, loaded.processor
     content = [{"type": "text", "text": args.prompt}]
     if args.image is not None:
         with Image.open(args.image) as image:
